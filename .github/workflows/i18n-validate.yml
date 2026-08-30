@@ -1,8 +1,10 @@
 name: i18n Validate
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
+      - ".github/workflows/i18n-validate.yml"
       - "locales/**/*.json"
       - "prompts/**/*.prompt"
       - "dashboard/src/i18n/index.ts"
@@ -16,6 +18,7 @@ on:
       - main
       - r-dev
     paths:
+      - ".github/workflows/i18n-validate.yml"
       - "locales/**/*.json"
       - "prompts/**/*.prompt"
       - "dashboard/src/i18n/index.ts"
