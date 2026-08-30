@@ -103,6 +103,28 @@ def test_resolve_static_path_prefers_installed_dashboard_package(monkeypatch, tm
     assert resolved_path == package_dist
 
 
+def test_resolve_static_path_prefers_local_dashboard_when_enabled(monkeypatch, tmp_path) -> None:
+    dashboard_dist = tmp_path / "dashboard" / "dist"
+    dashboard_dist.mkdir(parents=True)
+    (dashboard_dist / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    package_dist = tmp_path / "site-packages" / "maibot_dashboard" / "dist"
+    package_dist.mkdir(parents=True)
+
+    class _DashboardModule:
+        @staticmethod
+        def get_dist_path() -> Path:
+            return package_dist
+
+    monkeypatch.setenv("MAIBOT_WEBUI_USE_LOCAL_DASHBOARD", "1")
+    monkeypatch.setattr(webui_app, "_get_project_root", lambda: tmp_path)
+
+    with patch.object(webui_app, "import_module", return_value=_DashboardModule()):
+        resolved_path = webui_app._resolve_static_path()
+
+    assert resolved_path == dashboard_dist
+
+
 def test_resolve_static_path_ignores_dashboard_dist_when_package_is_unavailable(monkeypatch, tmp_path) -> None:
     dashboard_dist = tmp_path / "dashboard" / "dist"
     dashboard_dist.mkdir(parents=True)
