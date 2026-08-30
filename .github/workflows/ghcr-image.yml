@@ -41,6 +41,17 @@ jobs:
         shell: bash
         run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.1"
+
+      - name: Build dashboard from this source revision
+        working-directory: dashboard
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

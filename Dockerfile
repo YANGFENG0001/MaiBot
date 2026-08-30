@@ -1,11 +1,3 @@
-# Build the dashboard from the same source revision as the backend.
-FROM --platform=$BUILDPLATFORM oven/bun:1.2.1 AS dashboard-builder
-WORKDIR /build/dashboard
-COPY dashboard/package.json dashboard/bun.lock dashboard/bunfig.toml ./
-RUN bun install --frozen-lockfile
-COPY dashboard/ ./
-RUN bun run build
-
 # Runtime image
 FROM python:3.13-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -32,9 +24,9 @@ RUN uv sync --no-dev --no-install-project
 RUN python -m playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project source and the dashboard built from this exact revision.
+# Copy project source. Release workflows build dashboard/dist before this step,
+# so the runtime image serves a WebUI from the same source revision as the backend.
 COPY . .
-COPY --from=dashboard-builder /build/dashboard/dist /MaiMBot/dashboard/dist
 
 RUN git clone --depth 1 --branch main https://github.com/Mai-with-u/MaiBot-Napcat-Adapter.git plugin-templates/MaiBot-Napcat-Adapter
 RUN chmod +x docker-entrypoint.sh

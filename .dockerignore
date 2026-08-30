@@ -15,7 +15,6 @@ docs/
 .tmp_*/
 node_modules/
 dashboard/node_modules/
-dashboard/dist/
 dashboard/out/
 dashboard/dist-electron/
 data/
