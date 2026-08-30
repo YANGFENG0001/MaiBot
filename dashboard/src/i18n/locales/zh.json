@@ -712,7 +712,7 @@
     },
     "header": {
       "title": "首次配置向导",
-      "description": ""
+      "description": "让我们一起完成 {{appName}} 的首次配置"
     },
     "progress": {
       "stepCounter": "步骤 {{current}} / {{total}}"
@@ -914,7 +914,8 @@
           "visual": {
             "label": "启用视觉"
           }
-        }
+        },
+        "saveHint": "稍后可以继续配置更详细的任务分配。"
       }
     }
   },
@@ -1322,7 +1323,9 @@
       "webuiVersion": "WebUI 版本",
       "stableLatest": "最新版本",
       "githubReleases": "GitHub Releases",
-      "unknown": "未知"
+      "unknown": "未知",
+      "latestVersion": "最新版本",
+      "testLatest": "最新测试版"
     },
     "platformGuide": {
       "title": "添加平台账号",

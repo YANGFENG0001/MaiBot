@@ -35,7 +35,7 @@
       "botMainConfig": "ボットメイン設定",
       "aiModelProvider": "AIモデルプロバイダー",
       "modelManagement": "モデル管理",
-      "promptManagement": "Prompt管理",
+      "promptManagement": "プロンプト管理",
       "promptGenerator": "人格生成器（テスト機能）",
       "emojiManagement": "絵文字管理",
       "expressionManagement": "表現管理",
@@ -108,7 +108,7 @@
     "logs": "麦麦ログ"
   },
   "chat": {
-    "botNameFallback": "麦麦",
+    "botNameFallback": "マイ",
     "userFallback": "ユーザー",
     "userNameFallback": "人間",
     "virtualGroupFallback": "WebUI仮想グループチャット",
@@ -123,7 +123,7 @@
       "openEmojiManager": "ユーザースタンプ",
       "reconnect": "再接続",
       "removeImage": "画像を削除",
-      "save": "保存",
+      "save": "保存する",
       "send": "メッセージを送信"
     },
     "identity": {
@@ -175,7 +175,7 @@
       "profileTitle": "自分の身份",
       "editAvatar": "アバターを変更",
       "editName": "ニックネームを編集",
-      "saveName": "保存",
+      "saveName": "名前を保存",
       "savingAvatar": "アバターを保存中",
       "userAvatarAlt": "{{name}}のアバター"
     },
@@ -187,7 +187,7 @@
       "knownUserSuffix": " · 既知",
       "loading": "読み込み中...",
       "noUsers": "ユーザーが見つかりません",
-      "personCount": "({{count}} 人)",
+      "personCount": "({{count}}人)",
       "platform": "プラットフォームを選択",
       "platformPlaceholder": "プラットフォームを選択",
       "searchUser": "ユーザー名を検索...",
@@ -197,7 +197,7 @@
     "media": {
       "audioUnsupported": "お使いのブラウザは音声再生に対応していません",
       "emoji": "絵文字",
-      "face": "[表情:{{data}}]",
+      "face": "[顔:{{data}}]",
       "file": "[ファイル: {{data}}]",
       "forward": "[転送メッセージ]",
       "image": "画像",
@@ -678,7 +678,7 @@
       "skip": "ウィザードをスキップ",
       "complete": "設定を完了",
       "saveToken": "Token を保存",
-      "saving": "保存中...",
+      "saving": "保存しています...",
       "completing": "完了処理中..."
     },
     "skipDialog": {
@@ -1153,7 +1153,7 @@
     },
     "autoRefresh": "自動更新",
     "hitokoto": {
-      "title": "一言",
+      "title": "ひとこと",
       "edit": "一言を編集",
       "editor": {
         "title": "一言を編集",
@@ -1164,14 +1164,14 @@
         "customListDescription": "複数の内容を追加できます。出典は空欄でも構いません。",
         "add": "内容を追加",
         "empty": "カスタム内容はありません。クリックして最初の内容を追加します。",
-        "item": "内容 {{index}}",
+        "item": "項目 {{index}}",
         "remove": "内容 {{index}} を削除",
         "content": "内容 {{index}} の本文",
         "contentPlaceholder": "ホームに表示する内容を入力",
         "source": "内容 {{index}} の出典",
         "sourcePlaceholder": "出典（任意）",
         "blankHint": "既定の一言が無効でカスタム一覧も空のため、一言エリアは空欄になります。",
-        "saving": "保存中..."
+        "saving": "保存しています..."
       }
     },
     "cards": {
@@ -1305,7 +1305,7 @@
         "resource": "リソース",
         "plugin": "プラグイン",
         "monitor": "監視",
-        "external": "外部"
+        "external": "外部連携"
       },
       "dialog": {
         "title": "クイックショートカットをカスタマイズ",

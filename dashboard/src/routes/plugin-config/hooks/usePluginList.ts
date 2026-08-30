@@ -143,25 +143,36 @@ export function usePluginList() {
     setSelectedPlugin(null)
     setSelectedPluginTab(undefined)
     window.history.replaceState(null, '', getPluginConfigRoutePath())
-    void checkPluginUpdates()
+    if (!adapterOnly) {
+      void checkPluginUpdates()
+    }
   }
 
-  const checkPluginUpdates = async (
-    options: { forceRefresh?: boolean; showToast?: boolean } = {}
-  ) => {
+  type UpdateCheckOptions = {
+    forceRefresh?: boolean
+    showToast?: boolean
+    installedPlugins?: InstalledPlugin[]
+  }
+
+  const checkPluginUpdates = async (options: UpdateCheckOptions = {}) => {
     if (updateCheckInFlightRef.current) {
       return
     }
     updateCheckInFlightRef.current = true
     setCheckingUpdates(true)
     try {
+      const installedRequest = options.installedPlugins
+        ? Promise.resolve(options.installedPlugins)
+        : options.forceRefresh
+          ? getInstalledPlugins({ forceRefresh: true })
+          : Promise.resolve(plugins)
       const [marketPlugins, currentMaimaiVersion, allInstalled] = await Promise.all([
         fetchPluginList({ forceRefresh: options.forceRefresh }),
         getMaimaiVersion().catch((error) => {
           console.warn('获取麦麦版本信息失败，跳过插件更新兼容性检查:', error)
           return null
         }),
-        getInstalledPlugins({ forceRefresh: options.forceRefresh }),
+        installedRequest,
       ])
       const installed = adapterOnly
         ? allInstalled.filter((plugin) => getPluginType(plugin) === 'adapter')
@@ -225,7 +236,7 @@ export function usePluginList() {
   }
 
   // 加载插件列表（含深链接自动选中）
-  const loadPlugins = async () => {
+  const loadPlugins = async (): Promise<InstalledPlugin[] | null> => {
     setLoading(true)
     try {
       const allInstalled = await getInstalledPlugins()
@@ -239,20 +250,27 @@ export function usePluginList() {
           openPluginConfig(targetPlugin, initialTarget.tabId)
         }
       }
+      return installed
     } catch (error) {
       toast({
         title: '加载插件列表失败',
         description: error instanceof Error ? error.message : '未知错误',
         variant: 'destructive',
       })
+      return null
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    void loadPlugins()
-    void checkPluginUpdates({ forceRefresh: true })
+    const initializePluginList = async () => {
+      const installed = await loadPlugins()
+      if (!adapterOnly && installed) {
+        await checkPluginUpdates({ forceRefresh: true, installedPlugins: installed })
+      }
+    }
+    void initializePluginList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

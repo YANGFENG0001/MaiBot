@@ -1554,7 +1554,9 @@ function PluginConfigPageContent() {
     handleConfirmUpdatePlugin,
   } = usePluginLifecycle({
     getPluginRepositoryUrl,
-    onChanged: loadPlugins,
+    onChanged: async () => {
+      await loadPlugins()
+    },
     setActingPluginId,
   })
 
@@ -1584,64 +1586,66 @@ function PluginConfigPageContent() {
     <>
       <ScrollArea className="h-full">
       <div className="space-y-4 p-4 sm:space-y-6 sm:p-6">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-          <div className="relative min-w-0 flex-1 basis-0 sm:basis-72">
-            <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-            <Input
-              placeholder={adapterManagement ? '搜索适配器...' : '搜索插件...'}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
-          </div>
-          <div
-            data-dashboard-input="true"
-            className="border-input flex h-9 shrink-0 items-center gap-1.5 rounded-md border bg-transparent px-2 py-1 text-sm font-medium whitespace-nowrap shadow-sm transition-colors sm:gap-2 sm:px-3"
-          >
-            <Label htmlFor="show-update-only" className="cursor-pointer text-sm font-medium">
-              有更新
-            </Label>
-            <Switch
-              id="show-update-only"
-              checked={showUpdateOnly}
+        {!adapterManagement && (
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="relative min-w-0 flex-1 basis-0 sm:basis-72">
+              <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+              <Input
+                placeholder="搜索插件..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <div
+              data-dashboard-input="true"
+              className="border-input flex h-9 shrink-0 items-center gap-1.5 rounded-md border bg-transparent px-2 py-1 text-sm font-medium whitespace-nowrap shadow-sm transition-colors sm:gap-2 sm:px-3"
+            >
+              <Label htmlFor="show-update-only" className="cursor-pointer text-sm font-medium">
+                有更新
+              </Label>
+              <Switch
+                id="show-update-only"
+                checked={showUpdateOnly}
+                disabled={checkingUpdates}
+                onCheckedChange={setShowUpdateOnly}
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 shrink-0 px-2 sm:px-3"
+              onClick={() => void checkPluginUpdates({ forceRefresh: true, showToast: true })}
               disabled={checkingUpdates}
-              onCheckedChange={setShowUpdateOnly}
-            />
+              title="从插件市场重新获取最新版本信息"
+            >
+              <RefreshCw className={`h-4 w-4 ${checkingUpdates ? 'animate-spin' : ''} sm:mr-2`} />
+              <span className="hidden sm:inline">检测更新</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              onClick={loadPlugins}
+              disabled={loading}
+              aria-label="刷新插件列表"
+              title="刷新插件列表"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 shrink-0 px-2 sm:px-3"
+              onClick={() => triggerRestart()}
+              disabled={isRestarting}
+              title="重启麦麦"
+            >
+              <RotateCw className={`h-4 w-4 ${isRestarting ? 'animate-spin' : ''} sm:mr-2`} />
+              <span className="hidden sm:inline">重启麦麦</span>
+            </Button>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 shrink-0 px-2 sm:px-3"
-            onClick={() => void checkPluginUpdates({ forceRefresh: true, showToast: true })}
-            disabled={checkingUpdates}
-            title="从插件市场重新获取最新版本信息"
-          >
-            <RefreshCw className={`h-4 w-4 ${checkingUpdates ? 'animate-spin' : ''} sm:mr-2`} />
-            <span className="hidden sm:inline">检测更新</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            className="shrink-0"
-            onClick={loadPlugins}
-            disabled={loading}
-            aria-label="刷新插件列表"
-            title="刷新插件列表"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 shrink-0 px-2 sm:px-3"
-            onClick={() => triggerRestart()}
-            disabled={isRestarting}
-            title="重启麦麦"
-          >
-            <RotateCw className={`h-4 w-4 ${isRestarting ? 'animate-spin' : ''} sm:mr-2`} />
-            <span className="hidden sm:inline">重启麦麦</span>
-          </Button>
-        </div>
+        )}
 
         {/* 统计信息 */}
         {isModernDashboardStyle ? (

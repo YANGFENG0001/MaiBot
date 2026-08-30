@@ -19,7 +19,28 @@ on:
 
 # Workflow's jobs
 jobs:
+  check-dockerhub:
+    name: Check Docker Hub configuration
+    runs-on: ubuntu-24.04
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Detect Docker Hub credentials
+        id: check
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub secrets are not configured; image publishing jobs will be skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build-amd64:
+    needs: check-dockerhub
+    if: needs.check-dockerhub.outputs.configured == 'true'
     name: Build AMD64 Image
     runs-on: ubuntu-24.04
     outputs:
@@ -70,6 +91,8 @@ jobs:
             VCS_REF=${{ github.sha }}
 
   build-arm64:
+    needs: check-dockerhub
+    if: needs.check-dockerhub.outputs.configured == 'true'
     name: Build ARM64 Image
     runs-on: ubuntu-24.04-arm
     outputs:

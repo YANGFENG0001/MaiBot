@@ -613,7 +613,7 @@ describe('PluginConfigPage 空列表', () => {
     renderPage()
     await screen.findByText('Emoji Plugin')
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: '插件市场中没有找到该插件，无法判断新版本' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: '插件清单中没有仓库地址，无法更新/升级' })).toBeDisabled()
     )
     await user.click(screen.getByLabelText('有更新'))
     expect(await screen.findByText('暂无可更新插件')).toBeInTheDocument()
@@ -2052,7 +2052,7 @@ describe('PluginConfigPage 列表操作与状态', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Emoji Plugin')
-    await user.click(screen.getByRole('button', { name: '刷新' }))
+    await user.click(screen.getByRole('button', { name: '刷新插件列表' }))
     await waitFor(() => expect(vi.mocked(pluginApi.getInstalledPlugins).mock.calls.length).toBeGreaterThan(1))
     await user.click(screen.getByRole('button', { name: /重启麦麦/ }))
     expect(restartState.triggerRestart).toHaveBeenCalled()
@@ -2101,7 +2101,7 @@ describe('PluginConfigPage 列表操作与状态', () => {
 
     renderPage()
     expect(await screen.findByRole('button', { name: '插件清单中没有仓库地址，无法更新/升级' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '当前已是最新版本' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '检查官方仓库并更新到最新版本' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '插件市场最新版本 v9.0.0 与当前麦麦不兼容' })).toBeDisabled()
   })
 

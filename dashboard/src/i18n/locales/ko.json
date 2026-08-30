@@ -106,7 +106,7 @@
     "logs": "麦麦 로그"
   },
   "chat": {
-    "botNameFallback": "麦麦",
+    "botNameFallback": "마이",
     "userFallback": "사용자",
     "userNameFallback": "인간",
     "virtualGroupFallback": "WebUI 가상 그룹 채팅",
@@ -117,8 +117,10 @@
     },
     "actions": {
       "cancel": "취소",
+      "addImage": "이미지 추가",
       "openEmojiManager": "사용자 스티커",
       "reconnect": "다시 연결",
+      "removeImage": "이미지 제거",
       "save": "저장",
       "send": "메시지 보내기"
     },
@@ -223,6 +225,12 @@
       "currentSessionUnavailable": "현재 채팅 세션을 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
       "error": "오류",
       "incompleteConfig": "설정이 완전하지 않습니다",
+      "imageLimit": "이미지 수 제한에 도달했습니다",
+      "imageLimitDesc": "한 번에 최대 {{count}}개의 이미지를 보낼 수 있습니다.",
+      "imageReadFailed": "이미지를 읽지 못했습니다",
+      "imageReadFailedDesc": "다른 이미지를 선택한 후 다시 시도해 주세요.",
+      "imageUnsupported": "지원하지 않는 파일입니다",
+      "imageUnsupportedDesc": "이미지 파일을 선택해 주세요.",
       "networkError": "네트워크 오류",
       "platformFailed": "플랫폼을 불러오지 못했습니다",
       "selectPlatformAndUser": "플랫폼과 사용자를 선택하세요",
