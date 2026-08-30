@@ -1,5 +1,5 @@
 # Build the dashboard from the same source revision as the backend.
-FROM oven/bun:1.2.1 AS dashboard-builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.2.1 AS dashboard-builder
 WORKDIR /build/dashboard
 COPY dashboard/package.json dashboard/bun.lock dashboard/bunfig.toml ./
 RUN bun install --frozen-lockfile
