@@ -8,6 +8,7 @@ import {
   FileText,
   HardDrive,
   Hash,
+  ServerCog,
   Home,
   MessageSquare,
   Puzzle,
@@ -23,6 +24,7 @@ import type { MenuIcon, MenuSection } from './types'
 
 const HomeIcon = createStreamlineIcon('allergens-fish-remix', Home)
 const MonitorIcon = createStreamlineIcon('desktop-chat-remix', Activity)
+const OperationsIcon: MenuIcon = (props) => createElement(ServerCog, props)
 const ChatManagementIcon = createStreamlineIcon('chat-two-bubbles-oval-remix', MessageSquare)
 const WorkspacesIcon: MenuIcon = (props) => createElement(Boxes, props)
 const BotConfigIcon = createStreamlineIcon('page-setting-remix', Settings)
@@ -50,6 +52,7 @@ export const menuSections: MenuSection[] = [
         path: '/',
         searchDescription: 'search.items.homeDesc',
       },
+      { icon: OperationsIcon, label: '运行中心', path: '/operations' },
       { icon: MonitorIcon, label: 'sidebar.menu.maisakaMonitor', path: '/planner-monitor' },
       { icon: ChatManagementIcon, label: 'sidebar.menu.chatManagement', path: '/chat-management' },
       { icon: WorkspacesIcon, label: 'sidebar.menu.workspaces', path: '/workspaces' },

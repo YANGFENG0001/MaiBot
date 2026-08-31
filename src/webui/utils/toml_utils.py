@@ -4,8 +4,12 @@ TOML 工具函数
 提供 TOML 文件的格式化保存功能，确保数组等元素以美观的多行格式输出。
 """
 
-import re
+from pathlib import Path
 from typing import Any
+
+import os
+import re
+import tempfile
 
 import tomlkit
 from tomlkit.items import AoT, Array, InlineTable, Table
@@ -106,8 +110,6 @@ def save_toml_with_format(
         multiline_threshold: 数组多行格式化阈值，-1 表示不格式化
         preserve_comments: 是否保留原文件的注释和格式
     """
-    import os
-
     from tomlkit import TOMLDocument
 
     if preserve_comments and os.path.exists(file_path) and not isinstance(data, TOMLDocument):
@@ -120,5 +122,22 @@ def save_toml_with_format(
     output = tomlkit.dumps(formatted)
     output = re.sub(r"\n{3,}", "\n\n", output)
     tomlkit.loads(output)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(output)
+    target_path = Path(file_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target_path.name}.",
+        suffix=".tmp",
+        dir=str(target_path.parent),
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as file_obj:
+            file_obj.write(output)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temporary_path, target_path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise

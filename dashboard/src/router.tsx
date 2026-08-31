@@ -69,6 +69,13 @@ const indexRoute = createRoute({
   component: lazyRouteComponent(() => import('./routes/index'), 'IndexPage'),
 })
 
+// 服务器运行中心路由
+const operationsRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/operations',
+  component: lazyRouteComponent(() => import('./routes/operations'), 'OperationsPage'),
+})
+
 // 详细统计路由
 const statisticsRoute = createRoute({
   getParentRoute: () => protectedRoute,
@@ -378,6 +385,7 @@ const routeTree = rootRoute.addChildren([
   pluginMirrorsEmbedRoute,
   protectedRoute.addChildren([
     indexRoute,
+    operationsRoute,
     statisticsRoute,
     replyEffectsRoute,
     focusCompanionRoute,

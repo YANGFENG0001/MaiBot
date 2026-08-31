@@ -130,17 +130,18 @@ export function usePluginConfigEditor(options: UsePluginConfigEditorOptions) {
 
         // 格式正确，保存原始配置
         await updatePluginConfigRaw(plugin.id, sourceCode)
-        setOriginalSourceCode(sourceCode)
         setHasTomlError(false)
       } else {
         // 可视化模式
         await updatePluginConfig(plugin.id, config)
-        setOriginalConfig(JSON.parse(JSON.stringify(config)))
       }
 
+      // 以后端实际落盘并经运行时标准化后的内容为准，避免界面显示“已保存”但
+      // 草稿仍保留被 Schema 修正前的值。
+      await loadConfig()
       toast({
         title: '配置已保存',
-        description: '更改将在插件重新加载后生效',
+        description: '已重新读取服务端配置，运行时会自动应用更改',
       })
       return true
     } catch (error) {
@@ -153,7 +154,7 @@ export function usePluginConfigEditor(options: UsePluginConfigEditorOptions) {
     } finally {
       setSaving(false)
     }
-  }, [config, editMode, plugin.id, sourceCode, toast])
+  }, [config, editMode, loadConfig, plugin.id, sourceCode, toast])
 
   const handleBack = useCallback(() => {
     if (!hasChanges) {

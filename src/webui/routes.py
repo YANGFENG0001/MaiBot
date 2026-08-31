@@ -22,6 +22,7 @@ from src.webui.routers.emoji import router as emoji_router
 from src.webui.routers.expression import router as expression_router
 from src.webui.routers.jargon import router as jargon_router
 from src.webui.routers.memory import router as memory_router
+from src.webui.routers.operations import router as operations_router
 from src.webui.routers.mcp import router as mcp_router
 from src.webui.routers.model import router as model_router
 from src.webui.routers.person import router as person_router
@@ -66,6 +67,7 @@ router.include_router(user_emoji_router)
 router.include_router(plugin_router)
 # 注册系统控制路由
 router.include_router(system_router)
+router.include_router(operations_router)
 router.include_router(data_transfer_router)
 router.include_router(reasoning_process_router)
 router.include_router(reply_effects_router)

@@ -58,33 +58,34 @@ class GitMirrorConfig:
 
     # 配置文件路径
     CONFIG_FILE = Path("data/webui.json")
-    LEGACY_DEFAULT_MIRROR_PRIORITIES = {
-        "gh-proxy": 1,
-        "hk-gh-proxy": 2,
-        "cdn-gh-proxy": 3,
-        "edgeone-gh-proxy": 4,
-        "meyzh-github": 5,
-        "github": 999,
-    }
+    LEGACY_DEFAULT_MIRROR_SETS = (
+        {
+            "gh-proxy": (True, 1),
+            "hk-gh-proxy": (True, 2),
+            "cdn-gh-proxy": (True, 3),
+            "edgeone-gh-proxy": (True, 4),
+            "meyzh-github": (True, 5),
+            "github": (True, 999),
+        },
+        {
+            "gitproxy-mrhjx": (True, 1),
+            "ghproxy-vip": (True, 2),
+            "github": (True, 3),
+            "gh-proxy-com": (True, 4),
+            "v6-gh-proxy": (True, 5),
+            "cdn-gh-proxy-com": (True, 6),
+        },
+    )
 
     # 默认镜像源配置
     DEFAULT_MIRRORS = [
-        {
-            "id": "gitproxy-mrhjx",
-            "name": "gitproxy.mrhjx.cn 镜像",
-            "raw_prefix": "https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com",
-            "clone_prefix": "https://gitproxy.mrhjx.cn/https://github.com",
-            "enabled": True,
-            "priority": 1,
-            "created_at": None,
-        },
         {
             "id": "ghproxy-vip",
             "name": "ghproxy.vip 镜像",
             "raw_prefix": "https://ghproxy.vip/https://raw.githubusercontent.com",
             "clone_prefix": "https://ghproxy.vip/https://github.com",
             "enabled": True,
-            "priority": 2,
+            "priority": 1,
             "created_at": None,
         },
         {
@@ -93,7 +94,7 @@ class GitMirrorConfig:
             "raw_prefix": "https://raw.githubusercontent.com",
             "clone_prefix": "https://github.com",
             "enabled": True,
-            "priority": 3,
+            "priority": 2,
             "created_at": None,
         },
         {
@@ -102,7 +103,7 @@ class GitMirrorConfig:
             "raw_prefix": "https://gh-proxy.com/https://raw.githubusercontent.com",
             "clone_prefix": "https://gh-proxy.com/https://github.com",
             "enabled": True,
-            "priority": 4,
+            "priority": 3,
             "created_at": None,
         },
         {
@@ -111,7 +112,7 @@ class GitMirrorConfig:
             "raw_prefix": "https://v6.gh-proxy.org/https://raw.githubusercontent.com",
             "clone_prefix": "https://v6.gh-proxy.org/https://github.com",
             "enabled": True,
-            "priority": 5,
+            "priority": 4,
             "created_at": None,
         },
         {
@@ -120,7 +121,16 @@ class GitMirrorConfig:
             "raw_prefix": "https://cdn.gh-proxy.com/https://raw.githubusercontent.com",
             "clone_prefix": "https://cdn.gh-proxy.com/https://github.com",
             "enabled": True,
-            "priority": 6,
+            "priority": 5,
+            "created_at": None,
+        },
+        {
+            "id": "gitproxy-mrhjx",
+            "name": "gitproxy.mrhjx.cn 镜像（默认停用）",
+            "raw_prefix": "https://gitproxy.mrhjx.cn/https://raw.githubusercontent.com",
+            "clone_prefix": "https://gitproxy.mrhjx.cn/https://github.com",
+            "enabled": False,
+            "priority": 99,
             "created_at": None,
         },
     ]
@@ -170,22 +180,15 @@ class GitMirrorConfig:
         logger.info(f"已初始化 {len(self.mirrors)} 个默认镜像源")
 
     def _is_legacy_default_mirrors(self, mirrors: List[Dict[str, Any]]) -> bool:
-        """判断当前配置是否为未手动修改过的旧默认镜像源列表。"""
-        if len(mirrors) != len(self.LEGACY_DEFAULT_MIRROR_PRIORITIES):
+        """判断当前配置是否为未手动修改过的历史默认镜像源列表。"""
+        if any(mirror.get("updated_at") for mirror in mirrors):
             return False
 
-        for mirror in mirrors:
-            mirror_id = mirror.get("id")
-            if mirror_id not in self.LEGACY_DEFAULT_MIRROR_PRIORITIES:
-                return False
-            if mirror.get("updated_at"):
-                return False
-            if mirror.get("enabled") is not True:
-                return False
-            if mirror.get("priority") != self.LEGACY_DEFAULT_MIRROR_PRIORITIES[mirror_id]:
-                return False
-
-        return True
+        current = {
+            str(mirror.get("id")): (mirror.get("enabled"), mirror.get("priority"))
+            for mirror in mirrors
+        }
+        return any(current == legacy_defaults for legacy_defaults in self.LEGACY_DEFAULT_MIRROR_SETS)
 
     def _save_config(self) -> None:
         """保存配置到文件"""
@@ -543,7 +546,11 @@ class GitMirrorService:
                         "url": url,
                     }
             except httpx.HTTPStatusError as e:
-                last_error = f"HTTP {e.response.status_code}: {e}"
+                status_code = e.response.status_code
+                last_error = f"HTTP {status_code}: {e}"
+                if 400 <= status_code < 500 and status_code != 429:
+                    logger.warning(f"HTTP {status_code} 为不可重试错误，立即切换下一个镜像源: {url}")
+                    break
                 logger.warning(f"HTTP 错误 (尝试 {attempt + 1}/{self.max_retries}): {last_error}")
             except httpx.TimeoutException as e:
                 last_error = f"请求超时: {e}"

@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 import asyncio
+import os
+import tempfile
 
 from fastapi import APIRouter, Cookie, HTTPException
 import tomlkit
@@ -11,6 +13,7 @@ import tomlkit
 from src.common.logger import get_logger
 from src.common.runtime_loop import run_on_main_loop
 from src.plugin_runtime.protocol.envelope import InspectPluginConfigResultPayload
+from src.webui.services.adapter_config_sync_service import get_adapter_config_sync_service
 from src.webui.utils.toml_utils import save_toml_with_format
 
 from .schemas import UpdatePluginConfigRequest, UpdatePluginRawConfigRequest
@@ -30,6 +33,36 @@ router = APIRouter()
 
 _PLUGIN_RUNTIME_TOGGLE_TIMEOUT_SECONDS = 16.0
 _PLUGIN_RUNTIME_TOGGLE_POLL_INTERVAL_SECONDS = 0.1
+
+
+def _write_text_atomic(file_path: Path, content: str) -> None:
+    """原子写入文本配置，避免进程中断留下半截 TOML。"""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{file_path.name}.",
+        suffix=".tmp",
+        dir=str(file_path.parent),
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as file_obj:
+            file_obj.write(content)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temporary_path, file_path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _sync_adapter_runtime_config(plugin_id: str, config: Dict[str, Any]) -> Dict[str, Any] | None:
+    """若目标插件声明了适配器同步 Profile，则同步其外部运行时配置。"""
+    sync_service = get_adapter_config_sync_service()
+    if sync_service.get_profile(plugin_id) is None:
+        return None
+    return sync_service.sync_from_plugin_config(plugin_id, config)
 
 
 def _to_builtin_data(obj: Any) -> Any:
@@ -531,12 +564,20 @@ async def update_plugin_config_raw(
         if backup_path is not None:
             logger.info(f"已备份配置文件: {backup_path}")
 
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as file_obj:
-            file_obj.write(request.config)
+        _write_text_atomic(config_path, request.config)
+        saved_raw_config = config_path.read_text(encoding="utf-8")
+        tomlkit.loads(saved_raw_config)
 
+        parsed_saved_config = _to_builtin_data(tomlkit.loads(saved_raw_config))
+        adapter_sync = _sync_adapter_runtime_config(plugin_id, parsed_saved_config)
         logger.info(f"已更新插件原始配置: {plugin_id}")
-        return {"success": True, "message": "配置已保存", "note": "配置更改将自动热更新到对应插件"}
+        return {
+            "success": True,
+            "message": "配置已保存",
+            "note": "配置更改将自动热更新到对应插件",
+            "config": saved_raw_config,
+            "adapter_sync": adapter_sync,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -649,8 +690,16 @@ async def update_plugin_config(
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
         save_toml_with_format(config_data, str(config_path))
+        saved_config = _load_plugin_config_from_disk(plugin_path)
+        adapter_sync = _sync_adapter_runtime_config(plugin_id, saved_config)
         logger.info(f"已更新插件配置: {plugin_id}")
-        return {"success": True, "message": "配置已保存", "note": "配置更改将自动热更新到对应插件"}
+        return {
+            "success": True,
+            "message": "配置已保存",
+            "note": "配置更改将自动热更新到对应插件",
+            "config": saved_config,
+            "adapter_sync": adapter_sync,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
@@ -658,6 +707,24 @@ async def update_plugin_config(
     except Exception as e:
         logger.error(f"更新插件配置失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}") from e
+
+
+@router.post("/config/{plugin_id}/sync-adapter-runtime")
+async def sync_adapter_runtime_config(
+    plugin_id: str, maibot_session: Optional[str] = Cookie(None)
+) -> Dict[str, Any]:
+    """手动将适配器插件连接配置同步到其独立运行时。"""
+    require_plugin_token(maibot_session)
+    plugin_path = find_plugin_path_by_id(plugin_id)
+    if plugin_path is None:
+        raise HTTPException(status_code=404, detail=f"未找到插件: {plugin_id}")
+    try:
+        result = _sync_adapter_runtime_config(plugin_id, _load_plugin_config_from_disk(plugin_path))
+        if result is None:
+            raise HTTPException(status_code=404, detail="此插件没有适配器运行时同步 Profile")
+        return {"success": True, "sync": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/config/{plugin_id}/reset")

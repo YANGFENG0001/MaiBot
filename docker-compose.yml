@@ -28,6 +28,8 @@ services:
       - ./data/MaiMBot/emoji:/data/emoji # 持久化表情包
       - ./data/MaiMBot/plugins:/MaiMBot/plugins # 插件目录
       - ./data/MaiMBot/logs:/MaiMBot/logs # 日志目录
+      - ./docker-config/napcat:/MaiMBot/adapters-config/napcat # 允许适配器设置同步 OneBot Token
+      - ./docker-config/snowluma:/MaiMBot/adapters-config/snowluma # SnowLuma 存在时同步其独立配置
       - ./depends-data:/MaiMBot/depends-data # 运行时资源文件
       # - site-packages:/usr/local/lib/python3.13/site-packages # 持久化Python包，需要时启用
     restart: always
