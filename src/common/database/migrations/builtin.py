@@ -48,6 +48,7 @@ from .v39_to_v40 import migrate_v39_to_v40
 from .v40_to_v41 import migrate_v40_to_v41
 from .v41_to_v42 import migrate_v41_to_v42
 from .v42_to_v43 import migrate_v42_to_v43
+from .v43_to_v44 import migrate_v43_to_v44
 from .version_store import SQLiteUserVersionStore
 
 EMPTY_SCHEMA_VERSION = 0
@@ -94,7 +95,8 @@ V40_SCHEMA_VERSION = 40
 V41_SCHEMA_VERSION = 41
 V42_SCHEMA_VERSION = 42
 V43_SCHEMA_VERSION = 43
-LATEST_SCHEMA_VERSION = 43
+V44_SCHEMA_VERSION = 44
+LATEST_SCHEMA_VERSION = 44
 
 _LEGACY_V1_EXCLUSIVE_TABLES = (
     "chat_streams",
@@ -1950,6 +1952,13 @@ def build_default_migration_registry() -> MigrationRegistry:
                 name="v42_to_v43",
                 description="新增 BotProfile、Profile 策略和普通会话路由。",
                 handler=migrate_v42_to_v43,
+            ),
+            MigrationStep(
+                version_from=V43_SCHEMA_VERSION,
+                version_to=V44_SCHEMA_VERSION,
+                name="v43_to_v44",
+                description="新增 shared/person/conversation 记忆分区和兼容双写关系。",
+                handler=migrate_v43_to_v44,
             ),
         ]
     )

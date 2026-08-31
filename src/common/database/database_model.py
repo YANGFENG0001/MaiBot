@@ -599,6 +599,51 @@ class MemorySpace(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
 
 
+class MemoryPartition(SQLModel, table=True):
+    """记忆空间内的 shared/person/conversation 逻辑分区。"""
+
+    __tablename__ = "memory_partitions"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "memory_space_id",
+            "partition_type",
+            "partition_key",
+            "security_domain",
+            name="uq_memory_partitions_scope",
+        ),
+    )
+
+    id: str = Field(primary_key=True, max_length=96)
+    memory_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    partition_type: str = Field(index=True, max_length=20)
+    partition_key: str = Field(index=True, max_length=255)
+    security_domain: str = Field(default="normal", index=True, max_length=16)
+    display_name: str = Field(default="", max_length=255)
+    enabled: bool = Field(default=True, index=True)
+    policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class MemoryObjectPartition(SQLModel, table=True):
+    """记忆对象到权威 MemoryPartition 的成员关系。"""
+
+    __tablename__ = "memory_object_partitions"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", "partition_id", name="uq_memory_object_partitions_member"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    object_type: str = Field(index=True, max_length=32)
+    object_id: str = Field(index=True, max_length=255)
+    partition_id: str = Field(foreign_key="memory_partitions.id", index=True, max_length=96)
+    source_session_id: str = Field(default="", index=True, max_length=255)
+    origin_space_id: Optional[str] = Field(default=None, foreign_key="memory_spaces.id", index=True, max_length=64)
+    origin_partition_id: Optional[str] = Field(default=None, foreign_key="memory_partitions.id", index=True, max_length=96)
+    transfer_job_id: Optional[str] = Field(default=None, index=True, max_length=64)
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
 class MemoryObjectSpace(SQLModel, table=True):
     """A-Memorix 记忆对象到逻辑记忆空间的成员关系。"""
 

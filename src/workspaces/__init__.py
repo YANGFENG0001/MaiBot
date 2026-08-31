@@ -2,6 +2,7 @@
 
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID, BotProfileService, bot_profile_service
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
+from .partition_service import PartitionService, partition_service
 from .request_context import (
     BotRequestContext,
     SessionWorkspaceContext,
@@ -19,6 +20,7 @@ __all__ = [
     "DEFAULT_WORKSPACE_ID",
     "PUBLIC_MEMORY_SPACE_ID",
     "MemoryScope",
+    "PartitionService",
     "PersonaOverlay",
     "SessionWorkspaceContext",
     "WorkspaceContext",
@@ -27,5 +29,6 @@ __all__ = [
     "bot_profile_service",
     "create_background_task_without_request_context",
     "get_current_request_context",
+    "partition_service",
     "workspace_service",
 ]

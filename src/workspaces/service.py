@@ -30,6 +30,7 @@ from src.common.logger import get_logger
 
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
+from .partition_service import PartitionService
 from .request_context import BotRequestContext, SessionWorkspaceContext, get_current_request_context
 
 logger = get_logger("workspace")
@@ -451,6 +452,20 @@ class WorkspaceService:
             home_memory_space_id = profile.home_memory_space_id
 
         readable_space_ids = self.resolve_readable_memory_space_ids(home_memory_space_id)
+        readable_partition_ids: list[str] = []
+        for readable_space_id in readable_space_ids:
+            readable_partition_ids.extend(
+                (
+                    PartitionService(get_db_session).ensure_shared_partition(readable_space_id, "normal").id,
+                    PartitionService(get_db_session).ensure_person_partition(readable_space_id, person_id, "normal").id,
+                    PartitionService(get_db_session).ensure_conversation_partition(readable_space_id, session_id, "normal").id,
+                )
+            )
+        writable_partition_ids = (
+            PartitionService(get_db_session).ensure_shared_partition(home_memory_space_id, "normal").id,
+            PartitionService(get_db_session).ensure_person_partition(home_memory_space_id, person_id, "normal").id,
+            PartitionService(get_db_session).ensure_conversation_partition(home_memory_space_id, session_id, "normal").id,
+        )
         return BotRequestContext(
             trace_id=uuid4().hex,
             session_id=session_id,
@@ -463,9 +478,8 @@ class WorkspaceService:
             security_domain="normal",
             home_memory_space_id=home_memory_space_id,
             readable_space_ids=readable_space_ids,
-            # 分区表在 Phase 3C 引入；3B 先显式传递空范围，禁止伪造分区 ID。
-            readable_partition_ids=(),
-            writable_partition_ids=(),
+            readable_partition_ids=tuple(dict.fromkeys(readable_partition_ids)),
+            writable_partition_ids=writable_partition_ids,
             audience_type=audience_type,
             policy_revision=policy_revision,
         )
@@ -710,31 +724,39 @@ class WorkspaceService:
         memory_space_id: str,
         source_session_id: str = "",
         origin_space_id: Optional[str] = None,
+        partition_type: str = "",
+        partition_key: str = "",
+        security_domain: str = "",
     ) -> int:
+        """权威写入 MemoryPartition，并保留旧 MemoryObjectSpace 兼容双写。"""
+
         normalized_ids = tuple(dict.fromkeys(str(item).strip() for item in object_ids if str(item).strip()))
         if not normalized_ids:
             return 0
         created = 0
-        with get_db_session() as session:
-            for object_id in normalized_ids:
-                existing = session.exec(
-                    select(MemoryObjectSpace).where(
-                        MemoryObjectSpace.object_type == object_type,
-                        MemoryObjectSpace.object_id == object_id,
-                        MemoryObjectSpace.memory_space_id == memory_space_id,
-                    )
-                ).first()
-                if existing is not None:
-                    continue
-                session.add(
-                    MemoryObjectSpace(
-                        object_type=object_type,
-                        object_id=object_id,
-                        memory_space_id=memory_space_id,
-                        source_session_id=source_session_id,
-                        origin_space_id=origin_space_id,
-                    )
+        for object_id in normalized_ids:
+            selected_type = partition_type.strip()
+            if not selected_type:
+                selected_type = "person" if object_type == "person_profile" else ("conversation" if source_session_id else "shared")
+            if selected_type == "person":
+                partition = PartitionService(get_db_session).ensure_person_partition(
+                    memory_space_id, partition_key.strip() or object_id, security_domain
                 )
+            elif selected_type == "conversation":
+                partition = PartitionService(get_db_session).ensure_conversation_partition(
+                    memory_space_id, partition_key.strip() or source_session_id, security_domain
+                )
+            elif selected_type == "shared":
+                partition = PartitionService(get_db_session).ensure_shared_partition(memory_space_id, security_domain)
+            else:
+                raise ValueError("partition_type 只能是 shared/person/conversation")
+            if PartitionService(get_db_session).register_object_partition(
+                object_type=object_type,
+                object_id=object_id,
+                partition_id=partition.id,
+                source_session_id=source_session_id,
+                origin_space_id=origin_space_id,
+            ):
                 created += 1
         return created
 

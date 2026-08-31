@@ -331,6 +331,8 @@ class MemoryService:
                     object_ids=result.stored_ids,
                     memory_space_id=scope.primary_space_id,
                     source_session_id=chat_id,
+                    partition_type="conversation",
+                    partition_key=chat_id,
                 )
             return result
         except Exception as exc:
@@ -391,12 +393,14 @@ class MemoryService:
                     object_ids=result.stored_ids,
                     memory_space_id=scope.primary_space_id,
                     source_session_id=chat_id,
+                    partition_type="shared",
                 )
                 workspace_service.register_memory_objects(
                     object_type="person_profile",
                     object_ids=person_ids or [],
                     memory_space_id=scope.primary_space_id,
                     source_session_id=chat_id,
+                    partition_type="person",
                 )
             return result
         except Exception as exc:

@@ -50,6 +50,10 @@ async def test_ingest_tags_workspace_space_and_registers_stored_objects(monkeypa
     assert payload["metadata"]["memory_space_id"] == "space-a"
     assert payload["metadata"]["workspace_id"] == "workspace-a"
     assert {item["object_type"] for item in fake_workspace.registrations} == {"memory", "person_profile"}
+    memory_registration = next(item for item in fake_workspace.registrations if item["object_type"] == "memory")
+    person_registration = next(item for item in fake_workspace.registrations if item["object_type"] == "person_profile")
+    assert memory_registration["partition_type"] == "shared"
+    assert person_registration["partition_type"] == "person"
 
 
 @pytest.mark.asyncio
@@ -108,3 +112,32 @@ async def test_public_scope_keeps_legacy_memories_without_space_metadata(monkeyp
     result = await service.search("旧记忆", chat_id="legacy-chat", limit=5)
 
     assert [item.hash_value for item in result.hits] == ["legacy"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_summary_registers_conversation_partition(monkeypatch) -> None:
+    scope = MemoryScope(
+        workspace_id="workspace-a",
+        primary_space_id="space-a",
+        readable_space_ids=("space-a",),
+        writable_space_ids=("space-a",),
+        shared_session_ids=("chat-a",),
+    )
+    fake_workspace = FakeWorkspaceService(scope)
+    monkeypatch.setattr("src.services.memory_service.workspace_service", fake_workspace)
+    service = MemoryService()
+    service._invoke = AsyncMock(return_value={"success": True, "stored_ids": ["summary-a"]})
+
+    result = await service.ingest_summary(external_id="summary-a", chat_id="chat-a", text="会话摘要")
+
+    assert result.success is True
+    assert fake_workspace.registrations == [
+        {
+            "object_type": "memory",
+            "object_ids": ["summary-a"],
+            "memory_space_id": "space-a",
+            "source_session_id": "chat-a",
+            "partition_type": "conversation",
+            "partition_key": "chat-a",
+        }
+    ]
