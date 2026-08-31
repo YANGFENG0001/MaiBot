@@ -1738,6 +1738,7 @@ async def _query_aggregate(
     person_id: str,
     time_start: float | None,
     time_end: float | None,
+    memory_space_id: str = "",
 ) -> dict:
     result: MemorySearchResult = await memory_service.search(
         query,
@@ -1748,6 +1749,7 @@ async def _query_aggregate(
         time_start=time_start,
         time_end=time_end,
         respect_filter=False,
+        memory_space_id=memory_space_id,
     )
     return {"success": True, **result.to_dict()}
 
@@ -2528,6 +2530,7 @@ async def query_memory_aggregate(
     person_id: str = Query(""),
     time_start: float | None = Query(None),
     time_end: float | None = Query(None),
+    memory_space_id: str = Query(""),
 ):
     return await _query_aggregate(
         query,
@@ -2536,6 +2539,7 @@ async def query_memory_aggregate(
         person_id=person_id,
         time_start=time_start,
         time_end=time_end,
+        memory_space_id=memory_space_id,
     )
 
 

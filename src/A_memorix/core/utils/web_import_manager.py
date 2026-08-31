@@ -1181,6 +1181,8 @@ class ImportTaskManager:
             "chat_reference_time": chat_reference_time,
             "chat_id": chat_id,
             "scope_type": scope_type,
+            "memory_space_id": str(payload.get("memory_space_id") or "").strip(),
+            "workspace_id": str(payload.get("workspace_id") or "").strip(),
             "force": force,
             "clear_manifest": clear_manifest,
             "dedupe_policy": dedupe_policy,
@@ -3609,10 +3611,18 @@ class ImportTaskManager:
         scope_type = str(params.get("scope_type") or "").strip().lower() or (
             "chat" if chat_id else "global"
         )
+        memory_scope = {
+            key: value
+            for key, value in {
+                "memory_space_id": str(params.get("memory_space_id") or "").strip(),
+                "workspace_id": str(params.get("workspace_id") or "").strip(),
+            }.items()
+            if value
+        }
         if scope_type == "global" and not chat_id:
-            return {"scope_type": "global"}
+            return {"scope_type": "global", **memory_scope}
         if scope_type == "chat" and chat_id:
-            return {"scope_type": "chat", "chat_id": chat_id}
+            return {"scope_type": "chat", "chat_id": chat_id, **memory_scope}
         raise ValueError("导入任务的 scope_type 与 chat_id 不一致")
 
     async def _ensure_embedding_runtime_ready(self) -> None:

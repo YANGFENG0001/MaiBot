@@ -599,6 +599,33 @@ class MemorySpace(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
 
 
+class MemoryObjectSpace(SQLModel, table=True):
+    """A-Memorix 记忆对象到逻辑记忆空间的成员关系。"""
+
+    __tablename__ = "memory_object_spaces"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", "memory_space_id", name="uq_memory_object_spaces_member"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    object_type: str = Field(index=True, max_length=32)
+    object_id: str = Field(index=True, max_length=255)
+    memory_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    source_session_id: str = Field(default="", index=True, max_length=255)
+    origin_space_id: Optional[str] = Field(default=None, foreign_key="memory_spaces.id", index=True, max_length=64)
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemorySpaceMigrationState(SQLModel, table=True):
+    """旧共享记忆组迁移状态，保证自动迁移幂等。"""
+
+    __tablename__ = "memory_space_migration_states"  # type: ignore
+
+    migration_key: str = Field(primary_key=True, max_length=100)
+    payload_hash: str = Field(default="", max_length=128)
+    completed_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
 class PersonaProfile(SQLModel, table=True):
     """可被工作区复用的结构化人设覆盖层。"""
 

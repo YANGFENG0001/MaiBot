@@ -24,6 +24,29 @@ class MemorySpaceItem(BaseModel):
     policy_revision: int
 
 
+class MemorySpaceCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=2000)
+    space_type: str = "private"
+
+
+class MemorySpaceUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    enabled: Optional[bool] = None
+
+
+class MemorySpaceACLItem(BaseModel):
+    peer_space_id: str
+    can_read_from_peer: bool
+    expose_to_peer: bool
+
+
+class MemorySpaceACLRequest(BaseModel):
+    can_read_from_peer: bool = False
+    expose_to_peer: bool = False
+
+
 class WorkspaceItem(BaseModel):
     id: str
     name: str
@@ -157,6 +180,69 @@ def _member_item(chat: ChatSession) -> WorkspaceMemberItem:
         target_id=target_id,
         last_active_timestamp=chat.last_active_timestamp,
     )
+
+
+@router.post("/memory-spaces", response_model=MemorySpaceItem)
+async def create_memory_space(request: MemorySpaceCreateRequest) -> MemorySpaceItem:
+    try:
+        space = workspace_service.create_memory_space(**request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MemorySpaceItem.model_validate(space, from_attributes=True)
+
+
+@router.patch("/memory-spaces/{memory_space_id}", response_model=MemorySpaceItem)
+async def update_memory_space(memory_space_id: str, request: MemorySpaceUpdateRequest) -> MemorySpaceItem:
+    try:
+        space = workspace_service.update_memory_space(memory_space_id, **request.model_dump(exclude_unset=True))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MemorySpaceItem.model_validate(space, from_attributes=True)
+
+
+@router.get("/memory-spaces/{memory_space_id}/acl", response_model=list[MemorySpaceACLItem])
+async def list_memory_space_acl(memory_space_id: str) -> list[MemorySpaceACLItem]:
+    if workspace_service.get_memory_space(memory_space_id) is None:
+        raise HTTPException(status_code=404, detail="记忆空间不存在")
+    return [
+        MemorySpaceACLItem(
+            peer_space_id=item.peer_space_id,
+            can_read_from_peer=item.can_read_from_peer,
+            expose_to_peer=item.expose_to_peer,
+        )
+        for item in workspace_service.list_memory_space_acl(memory_space_id)
+    ]
+
+
+@router.put("/memory-spaces/{memory_space_id}/acl/{peer_space_id}", response_model=MemorySpaceACLItem)
+async def set_memory_space_acl(
+    memory_space_id: str,
+    peer_space_id: str,
+    request: MemorySpaceACLRequest,
+) -> MemorySpaceACLItem:
+    try:
+        acl = workspace_service.set_memory_space_acl(
+            memory_space_id,
+            peer_space_id,
+            can_read_from_peer=request.can_read_from_peer,
+            expose_to_peer=request.expose_to_peer,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MemorySpaceACLItem(
+        peer_space_id=acl.peer_space_id,
+        can_read_from_peer=acl.can_read_from_peer,
+        expose_to_peer=acl.expose_to_peer,
+    )
+
+
+@router.post("/memory-spaces/migrate-legacy")
+async def migrate_legacy_memory_groups() -> dict[str, int | bool]:
+    return {"success": True, "assigned_count": workspace_service.migrate_legacy_shared_memory_groups()}
 
 
 @router.get("", response_model=WorkspaceListResponse)

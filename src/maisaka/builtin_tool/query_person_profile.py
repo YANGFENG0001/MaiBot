@@ -109,12 +109,14 @@ async def handle_tool(
                 action="query",
                 person_id=person_id,
                 limit=limit,
+                chat_id=tool_ctx.runtime.session_id,
             )
         else:
             payload = await memory_service.profile_admin(
                 action="query",
                 person_keyword=person_name,
                 limit=limit,
+                chat_id=tool_ctx.runtime.session_id,
             )
     except Exception as exc:
         return tool_ctx.build_failure_result(

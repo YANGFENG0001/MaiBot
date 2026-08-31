@@ -4,6 +4,23 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryScope:
+    """一次记忆操作允许访问的逻辑空间快照。"""
+
+    workspace_id: str
+    primary_space_id: str
+    readable_space_ids: tuple[str, ...]
+    writable_space_ids: tuple[str, ...]
+    shared_session_ids: tuple[str, ...] = ()
+
+    def can_read(self, memory_space_id: str) -> bool:
+        return memory_space_id in self.readable_space_ids
+
+    def can_write(self, memory_space_id: str) -> bool:
+        return memory_space_id in self.writable_space_ids
+
+
+@dataclass(frozen=True, slots=True)
 class PersonaOverlay:
     """工作区生效的人设覆盖；空字段表示继续使用全局配置。"""
 

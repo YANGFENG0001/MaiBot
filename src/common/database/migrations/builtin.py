@@ -46,6 +46,7 @@ from .v37_to_v38 import migrate_v37_to_v38
 from .v38_to_v39 import migrate_v38_to_v39
 from .v39_to_v40 import migrate_v39_to_v40
 from .v40_to_v41 import migrate_v40_to_v41
+from .v41_to_v42 import migrate_v41_to_v42
 from .version_store import SQLiteUserVersionStore
 
 EMPTY_SCHEMA_VERSION = 0
@@ -90,7 +91,8 @@ V38_SCHEMA_VERSION = 38
 V39_SCHEMA_VERSION = 39
 V40_SCHEMA_VERSION = 40
 V41_SCHEMA_VERSION = 41
-LATEST_SCHEMA_VERSION = 41
+V42_SCHEMA_VERSION = 42
+LATEST_SCHEMA_VERSION = 42
 
 _LEGACY_V1_EXCLUSIVE_TABLES = (
     "chat_streams",
@@ -1932,6 +1934,13 @@ def build_default_migration_registry() -> MigrationRegistry:
                 name="v40_to_v41",
                 description="新增 Workspace 子系统与逻辑记忆空间基础表。",
                 handler=migrate_v40_to_v41,
+            ),
+            MigrationStep(
+                version_from=V41_SCHEMA_VERSION,
+                version_to=V42_SCHEMA_VERSION,
+                name="v41_to_v42",
+                description="新增记忆对象空间成员关系和旧共享组迁移状态。",
+                handler=migrate_v41_to_v42,
             ),
         ]
     )

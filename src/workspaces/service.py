@@ -1,6 +1,7 @@
 """Workspace 子系统数据访问、会话归属解析与策略计算。"""
 
 from datetime import datetime
+from hashlib import sha256
 from typing import Iterable, Optional
 from uuid import uuid4
 
@@ -11,19 +12,20 @@ from sqlmodel import col, func, select
 from src.common.database.database import get_db_session
 from src.common.database.database_model import (
     ChatSession,
+    MemoryObjectSpace,
     MemorySpace,
     MemorySpaceACL,
+    MemorySpaceMigrationState,
     PersonaProfile,
     Workspace,
     WorkspaceAuditLog,
     WorkspaceMembership,
-    WorkspacePluginPolicy,
     WorkspaceSelector,
     WorkspaceToolPolicy,
 )
 from src.common.logger import get_logger
 
-from .context import PersonaOverlay, WorkspaceContext
+from .context import MemoryScope, PersonaOverlay, WorkspaceContext
 
 logger = get_logger("workspace")
 
@@ -378,6 +380,269 @@ class WorkspaceService:
             ).all()
             exposed_peer_ids = {item.owner_space_id for item in inbound}
             return tuple(dict.fromkeys([owner_space_id, *[item for item in peer_ids if item in exposed_peer_ids]]))
+
+    def get_memory_space(self, memory_space_id: str) -> Optional[MemorySpace]:
+        self.ensure_defaults()
+        with get_db_session() as session:
+            return session.get(MemorySpace, memory_space_id)
+
+    def create_memory_space(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        space_type: str = "private",
+    ) -> MemorySpace:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("记忆空间名称不能为空")
+        if space_type not in {"private", "public"}:
+            raise ValueError("记忆空间类型只能是 private 或 public")
+        now = datetime.now()
+        with get_db_session() as session:
+            if session.exec(select(MemorySpace).where(MemorySpace.name == normalized_name)).first() is not None:
+                raise ValueError(f"记忆空间名称已存在: {normalized_name}")
+            space = MemorySpace(
+                id=f"memory-space-{uuid4().hex}",
+                name=normalized_name,
+                description=description.strip(),
+                space_type=space_type,
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(space)
+            session.flush()
+            return space
+
+    def update_memory_space(self, memory_space_id: str, **changes: object) -> MemorySpace:
+        with get_db_session() as session:
+            space = session.get(MemorySpace, memory_space_id)
+            if space is None:
+                raise LookupError("记忆空间不存在")
+            if memory_space_id == PUBLIC_MEMORY_SPACE_ID and changes.get("enabled") is False:
+                raise ValueError("默认公共记忆空间不能禁用")
+            if "name" in changes:
+                name = str(changes["name"] or "").strip()
+                if not name:
+                    raise ValueError("记忆空间名称不能为空")
+                duplicate = session.exec(
+                    select(MemorySpace).where(MemorySpace.name == name, MemorySpace.id != memory_space_id)
+                ).first()
+                if duplicate is not None:
+                    raise ValueError(f"记忆空间名称已存在: {name}")
+                space.name = name
+            if "description" in changes:
+                space.description = str(changes["description"] or "").strip()
+            if "enabled" in changes:
+                space.enabled = bool(changes["enabled"])
+            space.policy_revision += 1
+            space.updated_at = datetime.now()
+            session.add(space)
+            session.flush()
+            return space
+
+    def set_memory_space_acl(
+        self,
+        owner_space_id: str,
+        peer_space_id: str,
+        *,
+        can_read_from_peer: bool,
+        expose_to_peer: bool,
+    ) -> MemorySpaceACL:
+        if owner_space_id == peer_space_id:
+            raise ValueError("不能为同一个记忆空间建立 ACL")
+        now = datetime.now()
+        with get_db_session() as session:
+            if session.get(MemorySpace, owner_space_id) is None or session.get(MemorySpace, peer_space_id) is None:
+                raise LookupError("记忆空间不存在")
+            acl = session.exec(
+                select(MemorySpaceACL).where(
+                    MemorySpaceACL.owner_space_id == owner_space_id,
+                    MemorySpaceACL.peer_space_id == peer_space_id,
+                )
+            ).first()
+            if acl is None:
+                acl = MemorySpaceACL(
+                    owner_space_id=owner_space_id,
+                    peer_space_id=peer_space_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            acl.can_read_from_peer = can_read_from_peer
+            acl.expose_to_peer = expose_to_peer
+            acl.updated_at = now
+            session.add(acl)
+            owner = session.get(MemorySpace, owner_space_id)
+            if owner is not None:
+                owner.policy_revision += 1
+                owner.updated_at = now
+                session.add(owner)
+            session.flush()
+            return acl
+
+    def list_memory_space_acl(self, owner_space_id: str) -> list[MemorySpaceACL]:
+        with get_db_session() as session:
+            return list(
+                session.exec(
+                    select(MemorySpaceACL)
+                    .where(MemorySpaceACL.owner_space_id == owner_space_id)
+                    .order_by(MemorySpaceACL.peer_space_id)
+                ).all()
+            )
+
+    def resolve_memory_scope(self, session_id: str = "", memory_space_id: str = "") -> MemoryScope:
+        """统一解析写入主空间、ACL 可读空间和这些空间覆盖的聊天流。"""
+
+        clean_session_id = str(session_id or "").strip()
+        explicit_space_id = str(memory_space_id or "").strip()
+        if explicit_space_id:
+            space = self.get_memory_space(explicit_space_id)
+            if space is None or not space.enabled:
+                raise LookupError("记忆空间不存在或已禁用")
+            primary_space_id = space.id
+            workspace_id = ""
+        else:
+            context = self.resolve_context(clean_session_id)
+            primary_space_id = context.memory_space_id
+            workspace_id = context.workspace_id
+        readable_space_ids = self.resolve_readable_memory_space_ids(primary_space_id)
+        with get_db_session() as session:
+            workspace_rows = session.exec(
+                select(Workspace.id).where(col(Workspace.memory_space_id).in_(readable_space_ids), Workspace.enabled == True)  # noqa: E712
+            ).all()
+            shared_session_ids: tuple[str, ...] = ()
+            if workspace_rows:
+                sessions = session.exec(
+                    select(WorkspaceMembership.session_id).where(
+                        col(WorkspaceMembership.workspace_id).in_([str(item) for item in workspace_rows])
+                    )
+                ).all()
+                shared_session_ids = tuple(dict.fromkeys(str(item) for item in sessions if str(item).strip()))
+        if clean_session_id and clean_session_id not in shared_session_ids:
+            shared_session_ids = (*shared_session_ids, clean_session_id)
+        return MemoryScope(
+            workspace_id=workspace_id,
+            primary_space_id=primary_space_id,
+            readable_space_ids=readable_space_ids,
+            writable_space_ids=(primary_space_id,),
+            shared_session_ids=shared_session_ids,
+        )
+
+    def register_memory_objects(
+        self,
+        *,
+        object_type: str,
+        object_ids: Iterable[str],
+        memory_space_id: str,
+        source_session_id: str = "",
+        origin_space_id: Optional[str] = None,
+    ) -> int:
+        normalized_ids = tuple(dict.fromkeys(str(item).strip() for item in object_ids if str(item).strip()))
+        if not normalized_ids:
+            return 0
+        created = 0
+        with get_db_session() as session:
+            for object_id in normalized_ids:
+                existing = session.exec(
+                    select(MemoryObjectSpace).where(
+                        MemoryObjectSpace.object_type == object_type,
+                        MemoryObjectSpace.object_id == object_id,
+                        MemoryObjectSpace.memory_space_id == memory_space_id,
+                    )
+                ).first()
+                if existing is not None:
+                    continue
+                session.add(
+                    MemoryObjectSpace(
+                        object_type=object_type,
+                        object_id=object_id,
+                        memory_space_id=memory_space_id,
+                        source_session_id=source_session_id,
+                        origin_space_id=origin_space_id,
+                    )
+                )
+                created += 1
+        return created
+
+    def memory_object_space_ids(self, object_type: str, object_ids: Iterable[str]) -> dict[str, set[str]]:
+        normalized_ids = tuple(dict.fromkeys(str(item).strip() for item in object_ids if str(item).strip()))
+        if not normalized_ids:
+            return {}
+        with get_db_session() as session:
+            rows = session.exec(
+                select(MemoryObjectSpace).where(
+                    MemoryObjectSpace.object_type == object_type,
+                    col(MemoryObjectSpace.object_id).in_(normalized_ids),
+                )
+            ).all()
+        result: dict[str, set[str]] = {}
+        for row in rows:
+            result.setdefault(row.object_id, set()).add(row.memory_space_id)
+        return result
+
+    def migrate_legacy_shared_memory_groups(self) -> int:
+        """把旧 a_memorix.shared_memory_groups 幂等迁移为 Workspace + 私有记忆空间。"""
+
+        from src.common.utils.utils_config import ChatConfigUtils
+        from src.config.config import global_config
+
+        groups = list(global_config.a_memorix.shared_memory_groups or [])
+        raw_groups: list[set[str]] = []
+        for group in groups:
+            session_ids: set[str] = set()
+            for target in group.targets or []:
+                session_ids.update(ChatConfigUtils.get_target_session_ids(target))
+            normalized = {item for item in session_ids if item}
+            if normalized:
+                raw_groups.append(normalized)
+
+        # 旧配置允许共享组相互重叠；Workspace 主归属是一对一，因此先合并为连通分量。
+        merged_groups: list[set[str]] = []
+        for group_sessions in raw_groups:
+            overlapping = [item for item in merged_groups if item.intersection(group_sessions)]
+            if not overlapping:
+                merged_groups.append(set(group_sessions))
+                continue
+            combined = set(group_sessions)
+            for item in overlapping:
+                combined.update(item)
+                merged_groups.remove(item)
+            merged_groups.append(combined)
+
+        resolved_groups = sorted((sorted(item) for item in merged_groups), key=lambda item: item[0])
+        payload_hash = sha256(json.dumps(resolved_groups, ensure_ascii=False).encode("utf-8")).hexdigest()
+        migration_key = "legacy-shared-memory-groups-v1"
+        with get_db_session() as session:
+            state = session.get(MemorySpaceMigrationState, migration_key)
+            if state is not None and state.payload_hash == payload_hash:
+                return 0
+
+        migrated = 0
+        for index, session_ids in enumerate(resolved_groups, start=1):
+            workspace_name = f"旧共享记忆组 {index}"
+            with get_db_session() as session:
+                existing = session.exec(select(Workspace).where(Workspace.name == workspace_name)).first()
+            if existing is None:
+                workspace = self.create_workspace(
+                    name=workspace_name,
+                    description="由旧版 a_memorix.shared_memory_groups 自动迁移",
+                    memory_mode="private",
+                )
+                self.assign_sessions(workspace.id, session_ids)
+            else:
+                workspace = existing
+                self.assign_sessions(workspace.id, session_ids)
+            migrated += len(session_ids)
+
+        with get_db_session() as session:
+            state = session.get(MemorySpaceMigrationState, migration_key)
+            if state is None:
+                state = MemorySpaceMigrationState(migration_key=migration_key)
+            state.payload_hash = payload_hash
+            state.completed_at = datetime.now()
+            session.add(state)
+        return migrated
 
     @staticmethod
     def _resolve_persona(session, persona_profile_id: Optional[str]) -> PersonaOverlay:

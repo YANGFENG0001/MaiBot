@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from src.A_memorix.host_service import a_memorix_host_service
 from src.common.logger import get_logger
+from src.workspaces import PUBLIC_MEMORY_SPACE_ID, MemoryScope, workspace_service
 
 
 logger = get_logger("memory_service")
@@ -201,6 +202,19 @@ class MemoryService:
             evidence=[item for item in (payload.get("evidence") or []) if isinstance(item, dict)],
         )
 
+    @staticmethod
+    def _resolve_scope(chat_id: str, memory_space_id: str = "") -> MemoryScope:
+        return workspace_service.resolve_memory_scope(chat_id, memory_space_id)
+
+    @staticmethod
+    def _memory_space_from_hit(hit: MemoryHit) -> str:
+        return str(hit.metadata.get("memory_space_id", "") or "").strip() or PUBLIC_MEMORY_SPACE_ID
+
+    @classmethod
+    def _filter_hits_for_scope(cls, hits: List[MemoryHit], scope: MemoryScope, limit: int) -> List[MemoryHit]:
+        allowed = set(scope.readable_space_ids)
+        return [hit for hit in hits if cls._memory_space_from_hit(hit) in allowed][:limit]
+
     async def search(
         self,
         query: str,
@@ -214,6 +228,7 @@ class MemoryService:
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "",
     ) -> MemorySearchResult:
         clean_query = str(query or "").strip()
         normalized_time_start = None if time_start in {None, ""} else time_start
@@ -221,13 +236,16 @@ class MemoryService:
         if not clean_query and normalized_time_start is None and normalized_time_end is None:
             return MemorySearchResult()
         try:
+            scope = self._resolve_scope(chat_id, memory_space_id)
+            backend_limit = max(max(1, int(limit)) * 10, 50)
             payload = await self._invoke(
                 "search_memory",
                 {
                     "query": clean_query,
-                    "limit": max(1, int(limit)),
+                    "limit": backend_limit,
                     "mode": mode,
                     "chat_id": chat_id,
+                    "shared_chat_ids": list(scope.shared_session_ids) if len(scope.shared_session_ids) > 1 else [],
                     "person_id": person_id,
                     "time_start": normalized_time_start,
                     "time_end": normalized_time_end,
@@ -236,7 +254,9 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                 },
             )
-            return self._coerce_search_result(payload)
+            result = self._coerce_search_result(payload)
+            result.hits = self._filter_hits_for_scope(result.hits, scope, max(1, int(limit)))
+            return result
         except Exception as exc:
             logger.warning(f"长期记忆搜索失败: {exc}")
             return MemorySearchResult(success=False, error=str(exc))
@@ -281,8 +301,13 @@ class MemoryService:
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "",
     ) -> MemoryWriteResult:
         try:
+            scope = self._resolve_scope(chat_id, memory_space_id)
+            scoped_metadata = dict(metadata or {})
+            scoped_metadata["memory_space_id"] = scope.primary_space_id
+            scoped_metadata["workspace_id"] = scope.workspace_id
             payload = await self._invoke(
                 "ingest_summary",
                 {
@@ -293,13 +318,21 @@ class MemoryService:
                     "time_start": time_start,
                     "time_end": time_end,
                     "tags": tags or [],
-                    "metadata": metadata or {},
+                    "metadata": scoped_metadata,
                     "respect_filter": bool(respect_filter),
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
                 },
             )
-            return self._coerce_write_result(payload)
+            result = self._coerce_write_result(payload)
+            if result.success:
+                workspace_service.register_memory_objects(
+                    object_type="memory",
+                    object_ids=result.stored_ids,
+                    memory_space_id=scope.primary_space_id,
+                    source_session_id=chat_id,
+                )
+            return result
         except Exception as exc:
             logger.warning(f"长期记忆写入摘要失败: {exc}")
             return MemoryWriteResult(success=False, detail=str(exc))
@@ -323,8 +356,13 @@ class MemoryService:
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "",
     ) -> MemoryWriteResult:
         try:
+            scope = self._resolve_scope(chat_id, memory_space_id)
+            scoped_metadata = dict(metadata or {})
+            scoped_metadata["memory_space_id"] = scope.primary_space_id
+            scoped_metadata["workspace_id"] = scope.workspace_id
             payload = await self._invoke(
                 "ingest_text",
                 {
@@ -338,7 +376,7 @@ class MemoryService:
                     "time_start": time_start,
                     "time_end": time_end,
                     "tags": tags or [],
-                    "metadata": metadata or {},
+                    "metadata": scoped_metadata,
                     "entities": entities or [],
                     "relations": relations or [],
                     "respect_filter": bool(respect_filter),
@@ -346,16 +384,42 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                 },
             )
-            return self._coerce_write_result(payload)
+            result = self._coerce_write_result(payload)
+            if result.success:
+                workspace_service.register_memory_objects(
+                    object_type="memory",
+                    object_ids=result.stored_ids,
+                    memory_space_id=scope.primary_space_id,
+                    source_session_id=chat_id,
+                )
+                workspace_service.register_memory_objects(
+                    object_type="person_profile",
+                    object_ids=person_ids or [],
+                    memory_space_id=scope.primary_space_id,
+                    source_session_id=chat_id,
+                )
+            return result
         except Exception as exc:
             logger.warning(f"长期记忆写入文本失败: {exc}")
             return MemoryWriteResult(success=False, detail=str(exc))
 
-    async def get_person_profile(self, person_id: str, *, chat_id: str = "", limit: int = 10) -> PersonProfileResult:
+    async def get_person_profile(
+        self,
+        person_id: str,
+        *,
+        chat_id: str = "",
+        limit: int = 10,
+        memory_space_id: str = "",
+    ) -> PersonProfileResult:
         clean_person_id = str(person_id or "").strip()
         if not clean_person_id:
             return PersonProfileResult()
         try:
+            scope = self._resolve_scope(chat_id, memory_space_id)
+            memberships = workspace_service.memory_object_space_ids("person_profile", [clean_person_id])
+            profile_spaces = memberships.get(clean_person_id, {PUBLIC_MEMORY_SPACE_ID})
+            if not profile_spaces.intersection(scope.readable_space_ids):
+                return PersonProfileResult()
             payload = await self._invoke(
                 "get_person_profile",
                 {"person_id": clean_person_id, "chat_id": chat_id, "limit": max(1, int(limit))},
@@ -417,7 +481,33 @@ class MemoryService:
 
     async def profile_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         try:
-            return await self._invoke_admin("memory_profile_admin", action=action, **kwargs)
+            chat_id = str(kwargs.pop("chat_id", "") or "").strip()
+            memory_space_id = str(kwargs.pop("memory_space_id", "") or "").strip()
+            scope = self._resolve_scope(chat_id, memory_space_id)
+            payload = await self._invoke_admin("memory_profile_admin", action=action, **kwargs)
+            if action not in {"query", "list", "evidence"} or not isinstance(payload, dict):
+                return payload
+
+            def is_visible(person_id: str) -> bool:
+                memberships = workspace_service.memory_object_space_ids("person_profile", [person_id])
+                spaces = memberships.get(person_id, {PUBLIC_MEMORY_SPACE_ID})
+                return bool(spaces.intersection(scope.readable_space_ids))
+
+            items = payload.get("items")
+            if isinstance(items, list):
+                payload = dict(payload)
+                payload["items"] = [
+                    item
+                    for item in items
+                    if not isinstance(item, dict)
+                    or is_visible(str(item.get("person_id", "") or "").strip())
+                ]
+                payload["count"] = len(payload["items"])
+                return payload
+            person_id = str(payload.get("person_id", "") or kwargs.get("person_id", "") or "").strip()
+            if person_id and not is_visible(person_id):
+                return {"success": False, "error": "该人物画像不在当前记忆空间的可读范围内"}
+            return payload
         except Exception as exc:
             logger.warning(f"画像管理调用失败: {exc}")
             return {"success": False, "error": str(exc)}
@@ -438,6 +528,12 @@ class MemoryService:
 
     async def import_admin(self, *, action: str, timeout_ms: int = 120000, **kwargs) -> Dict[str, Any]:
         try:
+            if action.startswith("create_") or action == "retry_failed":
+                chat_id = str(kwargs.get("chat_id", "") or "").strip()
+                requested_space_id = str(kwargs.pop("memory_space_id", "") or "").strip()
+                scope = self._resolve_scope(chat_id, requested_space_id)
+                kwargs["memory_space_id"] = scope.primary_space_id
+                kwargs["workspace_id"] = scope.workspace_id
             return await self._invoke_admin("memory_import_admin", action=action, timeout_ms=timeout_ms, **kwargs)
         except Exception as exc:
             logger.warning(f"导入管理调用失败: {exc}")

@@ -97,3 +97,52 @@ export async function assignWorkspaceChats(workspaceId: string, sessionIds: stri
   )
   return response.assigned_count
 }
+
+export interface MemorySpaceAclItem {
+  peer_space_id: string
+  can_read_from_peer: boolean
+  expose_to_peer: boolean
+}
+
+export async function createMemorySpace(input: { name: string; description: string; space_type: 'public' | 'private' }): Promise<MemorySpaceItem> {
+  return backendApi.post<MemorySpaceItem>(`${API_BASE}/memory-spaces`, {
+    body: input,
+    errorMessage: '创建记忆空间失败',
+  })
+}
+
+export async function updateMemorySpace(
+  memorySpaceId: string,
+  input: Partial<Pick<MemorySpaceItem, 'name' | 'description' | 'enabled'>>,
+): Promise<MemorySpaceItem> {
+  return backendApi.patch<MemorySpaceItem>(`${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}`, {
+    body: input,
+    errorMessage: '更新记忆空间失败',
+  })
+}
+
+export async function getMemorySpaceAcl(memorySpaceId: string): Promise<MemorySpaceAclItem[]> {
+  return backendApi.get<MemorySpaceAclItem[]>(`${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}/acl`, {
+    cache: 'no-store',
+    errorMessage: '读取记忆空间权限失败',
+  })
+}
+
+export async function setMemorySpaceAcl(
+  memorySpaceId: string,
+  peerSpaceId: string,
+  input: Pick<MemorySpaceAclItem, 'can_read_from_peer' | 'expose_to_peer'>,
+): Promise<MemorySpaceAclItem> {
+  return backendApi.put<MemorySpaceAclItem>(
+    `${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}/acl/${encodeURIComponent(peerSpaceId)}`,
+    { body: input, errorMessage: '更新记忆空间权限失败' },
+  )
+}
+
+export async function migrateLegacyMemoryGroups(): Promise<number> {
+  const response = await backendApi.post<{ success: boolean; assigned_count: number }>(
+    `${API_BASE}/memory-spaces/migrate-legacy`,
+    { errorMessage: '迁移旧共享记忆组失败' },
+  )
+  return response.assigned_count
+}

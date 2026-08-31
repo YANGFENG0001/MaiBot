@@ -249,7 +249,16 @@ class AMemorixHostService:
             search_chat_id = "" if global_memory_sharing_enabled else chat_id
             shared_chat_ids = ()
             if not global_memory_sharing_enabled:
-                shared_chat_ids = tuple(AMemorixConfigUtils.get_shared_memory_session_ids(chat_id))
+                requested_shared_chat_ids = tuple(
+                    dict.fromkeys(
+                        str(item or "").strip()
+                        for item in (payload.get("shared_chat_ids") or [])
+                        if str(item or "").strip()
+                    )
+                )
+                shared_chat_ids = requested_shared_chat_ids or tuple(
+                    AMemorixConfigUtils.get_shared_memory_session_ids(chat_id)
+                )
 
             return await kernel.search_memory(
                 KernelSearchRequest(

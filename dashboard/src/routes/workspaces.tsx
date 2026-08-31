@@ -16,13 +16,17 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   assignWorkspaceChats,
+  createMemorySpace,
   createWorkspace,
   getAvailableWorkspaceChats,
+  getMemorySpaceAcl,
   getWorkspaces,
+  migrateLegacyMemoryGroups,
+  setMemorySpaceAcl,
   updateWorkspace,
 } from '@/lib/workspaces-api'
 
-import type { WorkspaceCreateInput, WorkspaceItem } from '@/lib/workspaces-api'
+import type { MemorySpaceAclItem, WorkspaceCreateInput, WorkspaceItem } from '@/lib/workspaces-api'
 
 const EMPTY_CREATE: WorkspaceCreateInput = {
   name: '',
@@ -38,19 +42,29 @@ export function WorkspacesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState<WorkspaceCreateInput>(EMPTY_CREATE)
   const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set())
+  const [memoryCreateOpen, setMemoryCreateOpen] = useState(false)
+  const [memoryCreateForm, setMemoryCreateForm] = useState({ name: '', description: '' })
 
   const workspaceQuery = useQuery({ queryKey: ['workspaces'], queryFn: getWorkspaces })
   const chatsQuery = useQuery({ queryKey: ['workspace-chats'], queryFn: getAvailableWorkspaceChats })
-  const workspaces = workspaceQuery.data?.data ?? []
+  const workspaces = useMemo(() => workspaceQuery.data?.data ?? [], [workspaceQuery.data?.data])
   const selectedWorkspace = useMemo(
     () => workspaces.find((item) => item.id === selectedId) ?? workspaces[0],
     [selectedId, workspaces],
   )
+  const memorySpaces = workspaceQuery.data?.memory_spaces ?? []
+  const selectedMemorySpaceId = selectedWorkspace?.memory_space_id ?? ''
+  const memoryAclQuery = useQuery({
+    queryKey: ['memory-space-acl', selectedMemorySpaceId],
+    queryFn: () => getMemorySpaceAcl(selectedMemorySpaceId),
+    enabled: Boolean(selectedMemorySpaceId),
+  })
 
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['workspaces'] }),
       queryClient.invalidateQueries({ queryKey: ['workspace-chats'] }),
+      queryClient.invalidateQueries({ queryKey: ['memory-space-acl'] }),
     ])
   }
 
@@ -77,6 +91,26 @@ export function WorkspacesPage() {
       setSelectedChats(new Set())
       await refresh()
     },
+  })
+
+  const createMemoryMutation = useMutation({
+    mutationFn: () => createMemorySpace({ ...memoryCreateForm, space_type: 'private' }),
+    onSuccess: async () => {
+      setMemoryCreateOpen(false)
+      setMemoryCreateForm({ name: '', description: '' })
+      await refresh()
+    },
+  })
+
+  const aclMutation = useMutation({
+    mutationFn: ({ peerSpaceId, input }: { peerSpaceId: string; input: Pick<MemorySpaceAclItem, 'can_read_from_peer' | 'expose_to_peer'> }) =>
+      setMemorySpaceAcl(selectedMemorySpaceId, peerSpaceId, input),
+    onSuccess: refresh,
+  })
+
+  const migrateMutation = useMutation({
+    mutationFn: migrateLegacyMemoryGroups,
+    onSuccess: refresh,
   })
 
   const visibleChats = chatsQuery.data ?? []
@@ -127,8 +161,8 @@ export function WorkspacesPage() {
         <AlertDescription>会话归属、人设覆盖入口和工具策略已按 Workspace 解析。A-Memorix 记忆对象的空间成员关系、选择性同步和完整插件事件隔离将在后续阶段接入；当前独立记忆库为逻辑空间元数据，不会错误宣称已经物理隔离。</AlertDescription>
       </Alert>
 
-      {(workspaceQuery.error || chatsQuery.error || createMutation.error || updateMutation.error || assignMutation.error) && (
-        <Alert variant="destructive"><AlertTitle>操作失败</AlertTitle><AlertDescription>{String(workspaceQuery.error || chatsQuery.error || createMutation.error || updateMutation.error || assignMutation.error)}</AlertDescription></Alert>
+      {(workspaceQuery.error || chatsQuery.error || createMutation.error || updateMutation.error || assignMutation.error || createMemoryMutation.error || aclMutation.error || migrateMutation.error) && (
+        <Alert variant="destructive"><AlertTitle>操作失败</AlertTitle><AlertDescription>{String(workspaceQuery.error || chatsQuery.error || createMutation.error || updateMutation.error || assignMutation.error || createMemoryMutation.error || aclMutation.error || migrateMutation.error)}</AlertDescription></Alert>
       )}
 
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -148,8 +182,48 @@ export function WorkspacesPage() {
               <CardContent className="grid gap-4 md:grid-cols-2">
                 <div className="flex items-center justify-between rounded-lg border p-3"><div><div className="font-medium">继承全局工具</div><div className="text-xs text-muted-foreground">关闭后仅显式允许的工具可见</div></div><Switch checked={selectedWorkspace.inherit_global_tools} onCheckedChange={(checked) => updateMutation.mutate({ id: selectedWorkspace.id, input: { inherit_global_tools: checked } })} /></div>
                 <div className="flex items-center justify-between rounded-lg border p-3"><div><div className="font-medium">继承全局插件</div><div className="text-xs text-muted-foreground">完整事件与 Hook 隔离仍在开发阶段</div></div><Switch checked={selectedWorkspace.inherit_global_plugins} onCheckedChange={(checked) => updateMutation.mutate({ id: selectedWorkspace.id, input: { inherit_global_plugins: checked } })} /></div>
-                <div className="rounded-lg border p-3"><div className="flex items-center gap-2 font-medium"><Database className="size-4" />记忆空间</div><div className="mt-1 text-sm text-muted-foreground">{selectedWorkspace.memory_space_name}</div></div>
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center gap-2 font-medium"><Database className="size-4" />记忆空间</div>
+                  <Select value={selectedWorkspace.memory_space_id} onValueChange={(memorySpaceId) => updateMutation.mutate({ id: selectedWorkspace.id, input: { memory_space_id: memorySpaceId } })}>
+                    <SelectTrigger className="mt-2"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {memorySpaces.filter((space) => space.enabled).map((space) => <SelectItem key={space.id} value={space.id}>{space.name}{space.space_type === 'public' ? ' · 公共' : ' · 独立'}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="rounded-lg border p-3"><div className="flex items-center gap-2 font-medium"><Brain className="size-4" />人设覆盖</div><div className="mt-1 text-sm text-muted-foreground">{selectedWorkspace.persona_profile_id ? '已绑定独立人设' : '继承全局人设'}</div></div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-3">
+                <div><CardTitle>逻辑记忆空间</CardTitle><CardDescription>当前写入只进入主空间；跨空间读取必须同时满足“允许读取”和对端“允许暴露”。</CardDescription></div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => migrateMutation.mutate()} disabled={migrateMutation.isPending}>迁移旧共享组</Button>
+                  <Dialog open={memoryCreateOpen} onOpenChange={setMemoryCreateOpen}>
+                    <DialogTrigger asChild><Button size="sm"><Plus className="mr-1 size-4" />新建记忆空间</Button></DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader><DialogTitle>新建独立记忆空间</DialogTitle></DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-2"><Label htmlFor="memory-space-name">名称</Label><Input id="memory-space-name" value={memoryCreateForm.name} onChange={(event) => setMemoryCreateForm({ ...memoryCreateForm, name: event.target.value })} /></div>
+                        <div className="space-y-2"><Label htmlFor="memory-space-description">说明</Label><Textarea id="memory-space-description" value={memoryCreateForm.description} onChange={(event) => setMemoryCreateForm({ ...memoryCreateForm, description: event.target.value })} /></div>
+                      </div>
+                      <DialogFooter><Button onClick={() => createMemoryMutation.mutate()} disabled={!memoryCreateForm.name.trim() || createMemoryMutation.isPending}>创建</Button></DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {memorySpaces.filter((space) => space.id !== selectedMemorySpaceId).map((space) => {
+                  const acl = memoryAclQuery.data?.find((item) => item.peer_space_id === space.id)
+                  const current = { can_read_from_peer: acl?.can_read_from_peer ?? false, expose_to_peer: acl?.expose_to_peer ?? false }
+                  return <div key={space.id} className="grid gap-3 rounded-lg border p-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
+                    <div><div className="font-medium">{space.name}</div><div className="text-xs text-muted-foreground">{space.space_type === 'public' ? '公共空间' : '独立空间'} · {space.description || '暂无说明'}</div></div>
+                    <div className="flex items-center gap-2 text-sm"><Switch aria-label={`允许 ${selectedWorkspace.name} 读取 ${space.name}`} checked={current.can_read_from_peer} onCheckedChange={(checked) => aclMutation.mutate({ peerSpaceId: space.id, input: { ...current, can_read_from_peer: checked } })} />允许读取对端</div>
+                    <div className="flex items-center gap-2 text-sm"><Switch aria-label={`允许 ${selectedWorkspace.name} 向 ${space.name} 暴露`} checked={current.expose_to_peer} onCheckedChange={(checked) => aclMutation.mutate({ peerSpaceId: space.id, input: { ...current, expose_to_peer: checked } })} />允许向对端暴露</div>
+                  </div>
+                })}
+                {memorySpaces.length <= 1 && <div className="py-6 text-center text-sm text-muted-foreground">暂无其他记忆空间。新建子系统时可自动建立独立记忆空间。</div>}
               </CardContent>
             </Card>
 

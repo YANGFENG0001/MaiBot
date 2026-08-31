@@ -16,8 +16,31 @@ interface MemoryRequestOptions {
  * 失败统一抛出 ApiError（含路由未命中诊断），不再静默重试本地兜底地址。
  */
 function requestJson<T>(path: string, options: MemoryRequestOptions = {}): Promise<T> {
-  return backendApi.request<T>(options.method ?? 'GET', `${API_BASE}${path}`, {
-    body: options.body,
+  const selectedSpaceId = typeof window === 'undefined'
+    ? ''
+    : new URLSearchParams(window.location.search).get('memory_space_id')
+      || window.localStorage.getItem('memory-console-space-id')
+      || ''
+  let scopedPath = path
+  if (selectedSpaceId) {
+    const separator = path.includes('?') ? '&' : '?'
+    scopedPath = `${path}${separator}memory_space_id=${encodeURIComponent(selectedSpaceId)}`
+  }
+  let scopedBody = options.body
+  if (selectedSpaceId && scopedBody instanceof FormData) {
+    const payloadJson = scopedBody.get('payload_json')
+    if (typeof payloadJson === 'string') {
+      try {
+        scopedBody.set('payload_json', JSON.stringify({ ...JSON.parse(payloadJson), memory_space_id: selectedSpaceId }))
+      } catch {
+        scopedBody.set('payload_json', JSON.stringify({ memory_space_id: selectedSpaceId }))
+      }
+    }
+  } else if (selectedSpaceId && scopedBody && typeof scopedBody === 'object') {
+    scopedBody = { ...(scopedBody as Record<string, unknown>), memory_space_id: selectedSpaceId }
+  }
+  return backendApi.request<T>(options.method ?? 'GET', `${API_BASE}${scopedPath}`, {
+    body: scopedBody,
   })
 }
 

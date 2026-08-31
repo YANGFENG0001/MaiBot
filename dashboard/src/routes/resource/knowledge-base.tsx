@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useQuery } from '@tanstack/react-query'
+
 import {
   Database,
   Loader2,
@@ -34,11 +36,13 @@ import {
 import { DashboardTabBar, DashboardTabTrigger } from '@/components/ui/dashboard-tabs'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ThinkingIllustration } from '@/components/ui/thinking-illustration'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+import { getWorkspaces } from '@/lib/workspaces-api'
 import {
   getMemoryImportChatTargets,
   type MemoryImportChatTargetPayload,
@@ -446,6 +450,20 @@ export function KnowledgeBasePage() {
   const { toast } = useToast()
   const deepLinkRef = useRef<KnowledgeBaseDeepLinkState>(readKnowledgeBaseDeepLink())
   const [activeTab, setActiveTab] = useState<MemoryConsoleTab>(deepLinkRef.current.tab)
+  const workspaceQuery = useQuery({ queryKey: ['workspaces', 'memory-console'], queryFn: getWorkspaces })
+  const [selectedMemorySpaceId] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('memory_space_id')
+      || window.localStorage.getItem('memory-console-space-id')
+      || ''
+  })
+  const switchMemorySpace = useCallback((memorySpaceId: string) => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('memory-console-space-id', memorySpaceId)
+    const params = new URLSearchParams(window.location.search)
+    params.set('memory_space_id', memorySpaceId)
+    window.location.assign(`${window.location.pathname}?${params.toString()}${window.location.hash}`)
+  }, [])
   const [quickStartVisible, setQuickStartVisible] = useState(() => {
     if (typeof window === 'undefined') {
       return true
@@ -797,7 +815,26 @@ export function KnowledgeBasePage() {
               className="border-border/60 border bg-transparent"
               contentClassName="p-3"
             >
-              <div className="mb-2 flex items-center justify-end gap-2">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs text-muted-foreground">记忆空间</Label>
+                  <Select
+                    value={selectedMemorySpaceId || workspaceQuery.data?.memory_spaces[0]?.id || ''}
+                    onValueChange={switchMemorySpace}
+                  >
+                    <SelectTrigger className="h-7 min-w-[190px] text-xs">
+                      <SelectValue placeholder="选择记忆空间" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(workspaceQuery.data?.memory_spaces ?? []).map((space) => (
+                        <SelectItem key={space.id} value={space.id}>
+                          {space.name}{space.space_type === 'public' ? ' · 公共' : ' · 独立'}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2">
                 {runtimeConfig?.vector_rebuild_required ? (
                   <Button
                     variant="destructive"
@@ -836,6 +873,7 @@ export function KnowledgeBasePage() {
                   />
                   自检
                 </Button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-4">
                 {runtimeBadges.map((item) => (
