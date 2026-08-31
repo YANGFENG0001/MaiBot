@@ -656,6 +656,7 @@ class Workspace(SQLModel, table=True):
     name: str = Field(unique=True, index=True, max_length=100)
     description: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
     memory_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    bot_profile_id: Optional[str] = Field(default=None, foreign_key="bot_profiles.id", index=True, max_length=64)
     persona_profile_id: Optional[str] = Field(default=None, foreign_key="persona_profiles.id", index=True, max_length=64)
     is_default: bool = Field(default=False, index=True)
     enabled: bool = Field(default=True, index=True)
@@ -663,6 +664,59 @@ class Workspace(SQLModel, table=True):
     inherit_global_plugins: bool = Field(default=True)
     policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
     created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class BotProfile(SQLModel, table=True):
+    """可路由 Bot 身份及其继承策略。"""
+
+    __tablename__ = "bot_profiles"  # type: ignore
+
+    id: str = Field(primary_key=True, max_length=64)
+    name: str = Field(unique=True, index=True, max_length=100)
+    profile_type: str = Field(index=True, max_length=16)
+    parent_profile_id: Optional[str] = Field(default=None, foreign_key="bot_profiles.id", index=True, max_length=64)
+    persona_profile_id: Optional[str] = Field(default=None, foreign_key="persona_profiles.id", index=True, max_length=64)
+    home_memory_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    inherit_parent_persona: bool = Field(default=True)
+    inherit_parent_tools: bool = Field(default=True)
+    inherit_parent_plugins: bool = Field(default=True)
+    enabled: bool = Field(default=True, index=True)
+    is_system: bool = Field(default=False, index=True)
+    policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class BotProfileToolPolicy(SQLModel, table=True):
+    __tablename__ = "bot_profile_tool_policies"  # type: ignore
+    __table_args__ = (UniqueConstraint("bot_profile_id", "component_name", name="uq_bot_profile_tool_policy"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    component_name: str = Field(index=True, max_length=255)
+    effect: str = Field(index=True, max_length=16)
+
+
+class BotProfilePluginPolicy(SQLModel, table=True):
+    __tablename__ = "bot_profile_plugin_policies"  # type: ignore
+    __table_args__ = (UniqueConstraint("bot_profile_id", "plugin_id", name="uq_bot_profile_plugin_policy"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    plugin_id: str = Field(index=True, max_length=255)
+    effect: str = Field(default="inherit", index=True, max_length=16)
+    overrides_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+
+
+class BotRouteState(SQLModel, table=True):
+    __tablename__ = "bot_route_states"  # type: ignore
+
+    session_id: str = Field(primary_key=True, max_length=255)
+    active_bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    route_mode: str = Field(default="group", index=True, max_length=16)
+    changed_by_person_id: str = Field(default="", index=True, max_length=255)
+    policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
     updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
 
 

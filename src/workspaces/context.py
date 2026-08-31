@@ -37,6 +37,17 @@ class PersonaOverlay:
 
 
 @dataclass(frozen=True, slots=True)
+class BotProfileContext:
+    """一次请求使用的可路由 Bot 身份快照。"""
+
+    profile_id: str
+    profile_type: str
+    home_memory_space_id: str
+    policy_revision: int
+    parent_profile_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceContext:
     """一次聊天轮次内统一使用的 Workspace 策略快照。"""
 
@@ -44,6 +55,7 @@ class WorkspaceContext:
     workspace_name: str
     memory_space_id: str
     policy_revision: int
+    bot_profile: BotProfileContext = field(default_factory=lambda: BotProfileContext("bot-profile-public", "public", "memory-space-public", 1))
     inherit_global_tools: bool = True
     inherit_global_plugins: bool = True
     allowed_tools: frozenset[str] = field(default_factory=frozenset)

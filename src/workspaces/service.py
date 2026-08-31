@@ -11,6 +11,8 @@ from sqlmodel import col, func, select
 
 from src.common.database.database import get_db_session
 from src.common.database.database_model import (
+    BotProfile,
+    BotRouteState,
     ChatSession,
     MemoryObjectSpace,
     MemorySpace,
@@ -25,7 +27,8 @@ from src.common.database.database_model import (
 )
 from src.common.logger import get_logger
 
-from .context import MemoryScope, PersonaOverlay, WorkspaceContext
+from .bot_profile_service import PUBLIC_BOT_PROFILE_ID
+from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
 
 logger = get_logger("workspace")
 
@@ -55,6 +58,21 @@ class WorkspaceService:
                 session.add(memory_space)
                 session.flush()
 
+            public_profile = session.get(BotProfile, PUBLIC_BOT_PROFILE_ID)
+            if public_profile is None:
+                public_profile = BotProfile(
+                    id=PUBLIC_BOT_PROFILE_ID,
+                    name="公共 Bot",
+                    profile_type="public",
+                    home_memory_space_id=memory_space.id,
+                    enabled=True,
+                    is_system=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(public_profile)
+                session.flush()
+
             workspace = session.get(Workspace, DEFAULT_WORKSPACE_ID)
             if workspace is None:
                 workspace = Workspace(
@@ -62,6 +80,7 @@ class WorkspaceService:
                     name="默认子系统",
                     description="所有未显式分配聊天的兼容工作区",
                     memory_space_id=memory_space.id,
+                    bot_profile_id=public_profile.id,
                     is_default=True,
                     enabled=True,
                     inherit_global_tools=True,
@@ -69,6 +88,9 @@ class WorkspaceService:
                     created_at=now,
                     updated_at=now,
                 )
+                session.add(workspace)
+            elif not workspace.bot_profile_id:
+                workspace.bot_profile_id = public_profile.id
                 session.add(workspace)
             return workspace, memory_space
 
@@ -137,14 +159,31 @@ class WorkspaceService:
                     updated_at=now,
                 )
                 session.add(memory_space)
+                session.flush()
             elif not selected_space_id or session.get(MemorySpace, selected_space_id) is None:
                 raise ValueError("指定的记忆空间不存在")
 
+            profile_id = f"bot-profile-{workspace_id}"
+            profile = BotProfile(
+                id=profile_id,
+                name=f"{normalized_name} Bot",
+                profile_type="group",
+                parent_profile_id=PUBLIC_BOT_PROFILE_ID,
+                persona_profile_id=None,
+                home_memory_space_id=selected_space_id,
+                inherit_parent_tools=inherit_global_tools,
+                inherit_parent_plugins=inherit_global_plugins,
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(profile)
             workspace = Workspace(
                 id=workspace_id,
                 name=normalized_name,
                 description=description.strip(),
                 memory_space_id=selected_space_id,
+                bot_profile_id=profile_id,
                 enabled=True,
                 inherit_global_tools=inherit_global_tools,
                 inherit_global_plugins=inherit_global_plugins,
@@ -204,6 +243,16 @@ class WorkspaceService:
                 workspace.inherit_global_tools = inherit_global_tools
             if inherit_global_plugins is not None:
                 workspace.inherit_global_plugins = inherit_global_plugins
+            bot_profile = session.get(BotProfile, workspace.bot_profile_id) if workspace.bot_profile_id else None
+            if bot_profile is not None:
+                bot_profile.name = f"{workspace.name} Bot" if not workspace.is_default else "公共 Bot"
+                bot_profile.home_memory_space_id = workspace.memory_space_id
+                bot_profile.enabled = workspace.enabled
+                bot_profile.inherit_parent_tools = workspace.inherit_global_tools
+                bot_profile.inherit_parent_plugins = workspace.inherit_global_plugins
+                bot_profile.policy_revision += 1
+                bot_profile.updated_at = now
+                session.add(bot_profile)
             workspace.policy_revision += 1
             workspace.updated_at = now
             session.add(workspace)
@@ -345,12 +394,26 @@ class WorkspaceService:
             ).all()
             allowed_tools = frozenset(item.tool_name for item in tool_policies if item.effect == "allow")
             denied_tools = frozenset(item.tool_name for item in tool_policies if item.effect == "deny")
-            persona = self._resolve_persona(session, workspace.persona_profile_id)
+            route = session.get(BotRouteState, session_id)
+            profile_id = route.active_bot_profile_id if route is not None else workspace.bot_profile_id
+            profile = session.get(BotProfile, profile_id or PUBLIC_BOT_PROFILE_ID)
+            if profile is None or not profile.enabled:
+                raise ValueError(f"BotProfile 不存在或已禁用: {profile_id}")
+            bot_profile = BotProfileContext(
+                profile.id,
+                profile.profile_type,
+                profile.home_memory_space_id,
+                profile.policy_revision,
+                profile.parent_profile_id or "",
+            )
+            persona_profile_id = self._resolve_bot_profile_persona_id(session, profile)
+            persona = self._resolve_persona(session, persona_profile_id)
             return WorkspaceContext(
                 workspace_id=workspace.id,
                 workspace_name=workspace.name,
                 memory_space_id=workspace.memory_space_id,
                 policy_revision=workspace.policy_revision,
+                bot_profile=bot_profile,
                 inherit_global_tools=workspace.inherit_global_tools,
                 inherit_global_plugins=workspace.inherit_global_plugins,
                 allowed_tools=allowed_tools,
@@ -643,6 +706,23 @@ class WorkspaceService:
             state.completed_at = datetime.now()
             session.add(state)
         return migrated
+
+    @staticmethod
+    def _resolve_bot_profile_persona_id(session, profile: BotProfile) -> Optional[str]:
+        visited: set[str] = set()
+        current = profile
+        while True:
+            if current.id in visited:
+                raise ValueError("BotProfile 父级形成循环")
+            visited.add(current.id)
+            if current.persona_profile_id:
+                return current.persona_profile_id
+            if not current.inherit_parent_persona or not current.parent_profile_id:
+                return None
+            parent = session.get(BotProfile, current.parent_profile_id)
+            if parent is None:
+                raise ValueError(f"父级 BotProfile 不存在: {current.parent_profile_id}")
+            current = parent
 
     @staticmethod
     def _resolve_persona(session, persona_profile_id: Optional[str]) -> PersonaOverlay:
