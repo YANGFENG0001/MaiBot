@@ -12,6 +12,7 @@ from sqlmodel import col, func, select
 from src.common.database.database import get_db_session
 from src.common.database.database_model import (
     BotProfile,
+    BotProfileToolPolicy,
     BotRouteState,
     ChatSession,
     MemoryObjectSpace,
@@ -29,6 +30,7 @@ from src.common.logger import get_logger
 
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
+from .request_context import BotRequestContext, SessionWorkspaceContext, get_current_request_context
 
 logger = get_logger("workspace")
 
@@ -383,19 +385,107 @@ class WorkspaceService:
                 session.add(workspace)
             return True
 
-    def resolve_context(self, session_id: str) -> WorkspaceContext:
-        """按精确成员、动态选择器、默认工作区的顺序解析策略。"""
+    def record_bot_route_audit(
+        self,
+        *,
+        workspace_id: str,
+        action: str,
+        actor: str,
+        profile_id: str = "",
+        route_mode: str = "",
+    ) -> None:
+        """记录不含消息正文和敏感配置的 Bot 路由审计。"""
+
+        details = {
+            "profile_id": profile_id,
+            "route_mode": route_mode,
+        }
+        with get_db_session() as session:
+            session.add(
+                WorkspaceAuditLog(
+                    workspace_id=workspace_id,
+                    action=action,
+                    actor=actor[:64] or "system",
+                    details_json=json.dumps(details, ensure_ascii=False),
+                    created_at=datetime.now(),
+                )
+            )
+
+    def resolve_session_workspace_context(self, session_id: str) -> SessionWorkspaceContext:
+        """解析真实聊天流所属 Workspace，不受当前用户临时 Bot 路由影响。"""
 
         self.ensure_defaults()
         with get_db_session() as session:
             workspace = self._resolve_workspace(session, session_id)
-            tool_policies = session.exec(
-                select(WorkspaceToolPolicy).where(WorkspaceToolPolicy.workspace_id == workspace.id)
-            ).all()
-            allowed_tools = frozenset(item.tool_name for item in tool_policies if item.effect == "allow")
-            denied_tools = frozenset(item.tool_name for item in tool_policies if item.effect == "deny")
+            return SessionWorkspaceContext(
+                session_id=session_id,
+                workspace_id=workspace.id,
+                workspace_name=workspace.name,
+                group_bot_profile_id=workspace.bot_profile_id or PUBLIC_BOT_PROFILE_ID,
+                default_memory_space_id=workspace.memory_space_id,
+                policy_revision=workspace.policy_revision,
+            )
+
+    def build_bot_request_context(
+        self,
+        session_id: str,
+        person_id: str,
+        audience_type: str,
+    ) -> BotRequestContext:
+        """为一条真实入站消息生成不可变 Bot 路由和记忆范围快照。"""
+
+        if audience_type not in {"private", "group"}:
+            raise ValueError("audience_type 只能是 private/group")
+        self.ensure_defaults()
+        with get_db_session() as session:
+            workspace = self._resolve_workspace(session, session_id)
             route = session.get(BotRouteState, session_id)
             profile_id = route.active_bot_profile_id if route is not None else workspace.bot_profile_id
+            profile = session.get(BotProfile, profile_id or PUBLIC_BOT_PROFILE_ID)
+            if profile is None or not profile.enabled:
+                raise ValueError(f"BotProfile 不存在或已禁用: {profile_id}")
+            if profile.profile_type == "kami":
+                raise ValueError("普通消息路由不能进入 Kami BotProfile")
+            route_revision = route.policy_revision if route is not None else 0
+            policy_revision = workspace.policy_revision + profile.policy_revision + route_revision
+            home_memory_space_id = profile.home_memory_space_id
+
+        readable_space_ids = self.resolve_readable_memory_space_ids(home_memory_space_id)
+        return BotRequestContext(
+            trace_id=uuid4().hex,
+            session_id=session_id,
+            workspace_id=workspace.id,
+            person_id=person_id,
+            active_bot_profile_id=profile.id,
+            active_bot_profile_type=profile.profile_type,
+            permission_group_id="",
+            access_mode="normal",
+            security_domain="normal",
+            home_memory_space_id=home_memory_space_id,
+            readable_space_ids=readable_space_ids,
+            # 分区表在 Phase 3C 引入；3B 先显式传递空范围，禁止伪造分区 ID。
+            readable_partition_ids=(),
+            writable_partition_ids=(),
+            audience_type=audience_type,
+            policy_revision=policy_revision,
+        )
+
+    def resolve_context(
+        self,
+        session_id: str,
+        *,
+        active_bot_profile_id: str = "",
+        workspace_id: str = "",
+    ) -> WorkspaceContext:
+        """按 Workspace 归属和消息级 BotProfile 快照解析当前策略。"""
+
+        self.ensure_defaults()
+        with get_db_session() as session:
+            workspace = session.get(Workspace, workspace_id) if workspace_id else self._resolve_workspace(session, session_id)
+            if workspace is None or not workspace.enabled:
+                raise ValueError(f"Workspace 不存在或已禁用: {workspace_id}")
+            route = session.get(BotRouteState, session_id)
+            profile_id = active_bot_profile_id or (route.active_bot_profile_id if route is not None else workspace.bot_profile_id)
             profile = session.get(BotProfile, profile_id or PUBLIC_BOT_PROFILE_ID)
             if profile is None or not profile.enabled:
                 raise ValueError(f"BotProfile 不存在或已禁用: {profile_id}")
@@ -408,18 +498,30 @@ class WorkspaceService:
             )
             persona_profile_id = self._resolve_bot_profile_persona_id(session, profile)
             persona = self._resolve_persona(session, persona_profile_id)
+            inherit_global_tools, profile_tool_policies = self._resolve_bot_profile_tool_policies(session, profile)
+            allowed_tools = frozenset(name for name, effect in profile_tool_policies.items() if effect == "allow")
+            denied_tools = frozenset(name for name, effect in profile_tool_policies.items() if effect == "deny")
             return WorkspaceContext(
                 workspace_id=workspace.id,
                 workspace_name=workspace.name,
-                memory_space_id=workspace.memory_space_id,
-                policy_revision=workspace.policy_revision,
+                memory_space_id=profile.home_memory_space_id,
+                policy_revision=workspace.policy_revision + profile.policy_revision,
                 bot_profile=bot_profile,
-                inherit_global_tools=workspace.inherit_global_tools,
-                inherit_global_plugins=workspace.inherit_global_plugins,
+                inherit_global_tools=inherit_global_tools,
+                inherit_global_plugins=profile.inherit_parent_plugins,
                 allowed_tools=allowed_tools,
                 denied_tools=denied_tools,
                 persona=persona,
             )
+
+    def resolve_context_for_request(self, request_context: BotRequestContext) -> WorkspaceContext:
+        """严格按当前消息快照解析策略，避免路由在处理中被后续消息改写。"""
+
+        return self.resolve_context(
+            request_context.session_id,
+            active_bot_profile_id=request_context.active_bot_profile_id,
+            workspace_id=request_context.workspace_id,
+        )
 
     def resolve_readable_memory_space_ids(self, owner_space_id: str) -> tuple[str, ...]:
         """执行 read_from + expose_to 双向握手，返回可检索空间集合。"""
@@ -566,10 +668,18 @@ class WorkspaceService:
             primary_space_id = space.id
             workspace_id = ""
         else:
-            context = self.resolve_context(clean_session_id)
-            primary_space_id = context.memory_space_id
-            workspace_id = context.workspace_id
-        readable_space_ids = self.resolve_readable_memory_space_ids(primary_space_id)
+            request_context = get_current_request_context()
+            if request_context is not None and request_context.session_id == clean_session_id:
+                primary_space_id = request_context.home_memory_space_id
+                workspace_id = request_context.workspace_id
+                readable_space_ids = request_context.readable_space_ids
+            else:
+                context = self.resolve_context(clean_session_id)
+                primary_space_id = context.memory_space_id
+                workspace_id = context.workspace_id
+                readable_space_ids = self.resolve_readable_memory_space_ids(primary_space_id)
+        if explicit_space_id:
+            readable_space_ids = self.resolve_readable_memory_space_ids(primary_space_id)
         with get_db_session() as session:
             workspace_rows = session.exec(
                 select(Workspace.id).where(col(Workspace.memory_space_id).in_(readable_space_ids), Workspace.enabled == True)  # noqa: E712
@@ -706,6 +816,41 @@ class WorkspaceService:
             state.completed_at = datetime.now()
             session.add(state)
         return migrated
+
+
+    @staticmethod
+    def _resolve_bot_profile_tool_policies(session, profile: BotProfile) -> tuple[bool, dict[str, str]]:
+        """在同一事务内按父级到子级解析 BotProfile 工具规则。"""
+
+        lineage: list[BotProfile] = []
+        visited: set[str] = set()
+        current = profile
+        while True:
+            if current.id in visited:
+                raise ValueError("BotProfile 父级形成循环")
+            visited.add(current.id)
+            lineage.append(current)
+            if not current.parent_profile_id:
+                break
+            parent = session.get(BotProfile, current.parent_profile_id)
+            if parent is None or not parent.enabled:
+                raise ValueError(f"父级 BotProfile 不存在或已禁用: {current.parent_profile_id}")
+            current = parent
+        lineage.reverse()
+
+        resolved: dict[str, str] = {}
+        inherit_global_tools = True
+        for index, item in enumerate(lineage):
+            if index == 0:
+                inherit_global_tools = item.inherit_parent_tools
+            elif not item.inherit_parent_tools:
+                inherit_global_tools = False
+                resolved.clear()
+            policies = session.exec(
+                select(BotProfileToolPolicy).where(BotProfileToolPolicy.bot_profile_id == item.id)
+            ).all()
+            resolved.update({policy.component_name: policy.effect for policy in policies})
+        return inherit_global_tools, resolved
 
     @staticmethod
     def _resolve_bot_profile_persona_id(session, profile: BotProfile) -> Optional[str]:

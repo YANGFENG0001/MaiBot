@@ -56,7 +56,7 @@ from src.maisaka.display.prompt_cli_renderer import PromptCLIVisualizer
 from src.maisaka.memory.mid_term import is_mid_term_memory_message
 from src.maisaka.visual.message_limiter import limit_latest_images_in_messages
 from src.plugin_runtime.hook_payloads import deserialize_prompt_items, serialize_prompt_items
-from src.workspaces import WorkspaceContext, workspace_service
+from src.workspaces import WorkspaceContext, get_current_request_context, workspace_service
 
 from .maisaka_expression_selector import maisaka_expression_selector
 
@@ -105,6 +105,9 @@ class BaseMaisakaReplyGenerator:
         """返回当前回复会话实时生效的 Workspace 策略。"""
 
         session_id = getattr(self.chat_stream, "session_id", "") if self.chat_stream is not None else ""
+        request_context = get_current_request_context()
+        if request_context is not None and request_context.session_id == session_id:
+            return workspace_service.resolve_context_for_request(request_context)
         return workspace_service.resolve_context(session_id)
 
     def _build_personality_prompt(self) -> str:

@@ -65,9 +65,16 @@ from src.maisaka.reply_effect.quote_utils import extract_quote_target_ids, messa
 from src.maisaka.turn_scheduler import MessageTurnScheduler
 from src.mcp_module.provider import MCPToolProvider
 from src.mcp_module.service import get_mcp_service
+from src.person_info.person_info import get_person_id
 from src.plugin_runtime.tool_provider import PluginToolProvider
 from src.services.message_word_frequency_service import update_high_frequency_terms_from_context_messages
-from src.workspaces import WorkspaceContext, workspace_service
+from src.workspaces import (
+    BotRequestContext,
+    WorkspaceContext,
+    create_background_task_without_request_context,
+    get_current_request_context,
+    workspace_service,
+)
 
 from .chat_loop_service import ChatResponse, MaisakaChatLoopService
 from .reasoning_engine import MaisakaReasoningEngine
@@ -150,7 +157,12 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         if chat_stream is None:
             raise ValueError(f"未找到会话 {session_id} 对应的 Maisaka 运行时")
         self.chat_stream: BotChatSession = chat_stream
-        self.workspace_context: WorkspaceContext = workspace_service.resolve_context(session_id)
+        initial_request_context = get_current_request_context()
+        self.workspace_context: WorkspaceContext = (
+            workspace_service.resolve_context_for_request(initial_request_context)
+            if initial_request_context is not None and initial_request_context.session_id == session_id
+            else workspace_service.resolve_context(session_id)
+        )
 
         session_name = chat_manager.get_session_name(session_id) or session_id
         self.session_name = session_name
@@ -224,10 +236,29 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._register_tool_providers()
         self._emit_monitor_session_start()
 
+    def resolve_request_context_for_message(self, message: SessionMessage) -> BotRequestContext:
+        """读取消息入站时的快照；恢复历史消息时按其真实发送者重新构建。"""
+
+        if message.bot_request_context is not None:
+            return message.bot_request_context
+        user_info = message.message_info.user_info
+        context = workspace_service.build_bot_request_context(
+            message.session_id,
+            get_person_id(message.platform, user_info.user_id),
+            "group" if message.message_info.group_info is not None else "private",
+        )
+        message.bot_request_context = context
+        return context
+
     def refresh_workspace_context(self) -> WorkspaceContext:
         """刷新当前会话的 Workspace 策略，使 WebUI 修改无需重启即可生效。"""
 
-        context = workspace_service.resolve_context(self.session_id)
+        request_context = get_current_request_context()
+        context = (
+            workspace_service.resolve_context_for_request(request_context)
+            if request_context is not None and request_context.session_id == self.session_id
+            else workspace_service.resolve_context(self.session_id)
+        )
         if context.policy_revision != self.workspace_context.policy_revision or context.workspace_id != self.workspace_context.workspace_id:
             logger.info(
                 f"{self.log_prefix} Workspace 策略已刷新: "
@@ -278,7 +309,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         """向 WebUI 监控面板同步当前会话的展示标识。"""
 
         try:
-            self._monitor_session_start_task = asyncio.create_task(
+            self._monitor_session_start_task = create_background_task_without_request_context(
                 emit_session_start(
                     session_id=self.session_id,
                     session_name=self.session_name,
@@ -564,7 +595,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             return
 
         try:
-            asyncio.get_running_loop().create_task(self._recognize_sent_images(readable_images, message.message_id))
+            create_background_task_without_request_context(self._recognize_sent_images(readable_images, message.message_id))
         except RuntimeError:
             logger.debug(f"{self.log_prefix} 当前无运行中的事件循环，跳过已发送图片后台识图调度")
 
@@ -713,7 +744,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         """异步广播 MaiSaka 自己发出的消息，供 WebUI 实时展示。"""
 
         try:
-            asyncio.create_task(
+            create_background_task_without_request_context(
                 emit_message_sent(
                     session_id=self.session_id,
                     speaker_name=speaker_name,
@@ -794,7 +825,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         refresh_key: tuple[str, str],
     ) -> None:
         try:
-            asyncio.create_task(self._emit_monitor_message_updated(message, refresh_key))
+            create_background_task_without_request_context(self._emit_monitor_message_updated(message, refresh_key))
         except RuntimeError as exc:
             self._monitor_visual_refresh_keys.discard(refresh_key)
             logger.debug(f"{self.log_prefix} 调度监控消息图片刷新失败: {exc}")
@@ -837,7 +868,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             user_info = message.message_info.user_info
             group_info = message.message_info.group_info
             speaker_name = user_info.user_cardname or user_info.user_nickname or user_info.user_id
-            asyncio.create_task(
+            create_background_task_without_request_context(
                 emit_message_ingested(
                     session_id=self.session_id,
                     speaker_name=speaker_name,
@@ -866,7 +897,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._emit_monitor_message_ingested(message)
         self._prune_processed_message_cache()
         if self._is_reply_effect_tracking_enabled():
-            asyncio.create_task(self._reply_effect_tracker.observe_user_message(message))
+            create_background_task_without_request_context(self._reply_effect_tracker.observe_user_message(message))
         if not self._should_continue_after_focus_gate(message):
             return
         if self._agent_state == self._STATE_RUNNING:
@@ -1186,7 +1217,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         """延迟后重新检查是否应投递消息触发。"""
 
         self._cancel_deferred_message_turn_task()
-        self._deferred_message_turn_task = asyncio.create_task(self._schedule_deferred_message_turn(delay_seconds))
+        self._deferred_message_turn_task = create_background_task_without_request_context(self._schedule_deferred_message_turn(delay_seconds))
 
     def _mark_message_turn_unscheduled(self) -> None:
         """释放当前消息触发占位，允许后续重新调度。"""
@@ -1339,7 +1370,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
                     exc = None
                 if exc is not None:
                     logger.error(f"{self.log_prefix} 内部循环任务异常退出: {exc}")
-            self._internal_loop_task = asyncio.create_task(self._reasoning_engine.run_loop())
+            self._internal_loop_task = create_background_task_without_request_context(self._reasoning_engine.run_loop())
             if is_restart:
                 logger.warning(f"{self.log_prefix} 已重新拉起 Maisaka 内部循环任务")
             else:
@@ -1791,7 +1822,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._cancel_deferred_message_turn_task()
         self._cancel_wait_timeout_task()
         if seconds is not None:
-            self._wait_timeout_task = asyncio.create_task(
+            self._wait_timeout_task = create_background_task_without_request_context(
                 self._schedule_wait_timeout(seconds=seconds, tool_call_id=tool_call_id)
             )
 
@@ -1902,7 +1933,7 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             f"是否启用高频词学习={enable_high_frequency_learning}"
         )
 
-        self._trimmed_history_learning_task = asyncio.create_task(
+        self._trimmed_history_learning_task = create_background_task_without_request_context(
             self._run_trimmed_history_learning(
                 list(context_messages),
                 enable_expression_learning=enable_expression_learning,
@@ -1962,13 +1993,13 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
 
         learner_tasks: list[asyncio.Task[bool]] = []
         if enable_expression_learning:
-            learner_tasks.append(asyncio.create_task(run_expression_learning()))
+            learner_tasks.append(create_background_task_without_request_context(run_expression_learning()))
         if enable_jargon_learning:
-            learner_tasks.append(asyncio.create_task(run_jargon_learning()))
+            learner_tasks.append(create_background_task_without_request_context(run_jargon_learning()))
         if enable_behavior_learning:
-            learner_tasks.append(asyncio.create_task(run_behavior_learning()))
+            learner_tasks.append(create_background_task_without_request_context(run_behavior_learning()))
         if enable_high_frequency_learning:
-            learner_tasks.append(asyncio.create_task(run_high_frequency_learning()))
+            learner_tasks.append(create_background_task_without_request_context(run_high_frequency_learning()))
         if not learner_tasks:
             return
 

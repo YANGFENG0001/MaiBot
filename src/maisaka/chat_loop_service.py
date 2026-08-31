@@ -42,7 +42,7 @@ from src.plugin_runtime.hook_payloads import (
 from src.plugin_runtime.hook_schema_utils import build_object_schema
 from src.plugin_runtime.host.hook_spec_registry import HookSpec, HookSpecRegistry
 from src.services.llm_service import LLMServiceClient
-from src.workspaces import WorkspaceContext, workspace_service
+from src.workspaces import WorkspaceContext, get_current_request_context, workspace_service
 
 from src.maisaka.builtin_tool import get_builtin_tools
 from src.maisaka.context.history import normalize_tool_call_result_pairs
@@ -635,6 +635,9 @@ class MaisakaChatLoopService:
     def workspace_context(self) -> WorkspaceContext:
         """实时解析当前会话的 Workspace，确保配置修改无需重启。"""
 
+        request_context = get_current_request_context()
+        if request_context is not None and request_context.session_id == self._session_id:
+            return workspace_service.resolve_context_for_request(request_context)
         return workspace_service.resolve_context(self._session_id)
 
     @property

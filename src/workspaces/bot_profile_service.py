@@ -121,6 +121,45 @@ class BotProfileService:
             session.add(policy)
             return policy
 
+    def resolve_group_profile(
+        self,
+        *,
+        current_workspace_id: str,
+        workspace_id_or_name: str = "",
+    ) -> tuple[Workspace, BotProfile]:
+        """解析当前或指定 Workspace 的分组 BotProfile。"""
+
+        normalized_target = workspace_id_or_name.strip()
+        with get_db_session() as session:
+            if normalized_target:
+                workspace = session.get(Workspace, normalized_target)
+                if workspace is None:
+                    workspace = session.exec(select(Workspace).where(Workspace.name == normalized_target)).first()
+            else:
+                workspace = session.get(Workspace, current_workspace_id)
+            if workspace is None or not workspace.enabled:
+                raise ValueError("指定的子系统不存在或已禁用")
+            profile = session.get(BotProfile, workspace.bot_profile_id or "")
+            if profile is None or not profile.enabled:
+                raise ValueError("指定子系统没有可用的分组 Bot")
+            if profile.profile_type != "group":
+                raise ValueError("指定子系统没有独立的分组 Bot")
+            return workspace, profile
+
+    def get_route_state(self, session_id: str) -> Optional[BotRouteState]:
+        with get_db_session() as session:
+            return session.get(BotRouteState, session_id)
+
+    def reset_route_state(self, session_id: str) -> bool:
+        """恢复 Workspace 默认 Bot 路由。"""
+
+        with get_db_session() as session:
+            state = session.get(BotRouteState, session_id)
+            if state is None:
+                return False
+            session.delete(state)
+            return True
+
     def set_route_state(
         self,
         session_id: str,

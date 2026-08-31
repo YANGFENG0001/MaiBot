@@ -1,6 +1,6 @@
 import asyncio
 from asyncio import Task
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 from rich.traceback import install
 from sqlmodel import select
@@ -9,6 +9,9 @@ from src.common.logger import get_logger
 from src.common.database.database import get_db_session
 from src.common.database.database_model import Messages
 from src.common.data_models.mai_message_data_model import MaiMessage, UserInfo
+if TYPE_CHECKING:
+    from src.workspaces.request_context import BotRequestContext
+
 from src.common.data_models.message_component_data_model import (
     AtComponent,
     DictComponent,
@@ -40,6 +43,7 @@ class SessionMessage(MaiMessage):
     # 仅记录适配器成功回执明确提供的平台最终 ID；没有回执时保持 None，
     # 不得使用发送前生成的内部 message_id 代替。
     platform_message_id: Optional[str] = None
+    bot_request_context: Optional["BotRequestContext"] = None
 
     #便于调试的打印函数
     def __str__(self) -> str:

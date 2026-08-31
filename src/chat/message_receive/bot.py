@@ -10,18 +10,23 @@ from maim_message import MessageBase
 
 from src.chat.heart_flow.heartflow_message_processor import HeartFCMessageReceiver
 from src.chat.heart_flow.heartflow_manager import heartflow_manager
+from src.common.data_models.message_component_data_model import TextComponent
 from src.common.logger import get_logger
 from src.common.utils.utils_message import MessageUtils
 from src.common.utils.utils_session import SessionUtils
 from src.config.config import global_config
 from src.core.announcement_manager import global_announcement_manager
 from src.core.local_operator import has_command_permission, has_plugin_management_permission, is_local_operator
+from src.person_info.person_info import get_person_id
 from src.platform_io.route_key_factory import RouteKeyFactory
 from src.plugin_runtime.component_query import component_query_service
 from src.plugin_runtime.hook_payloads import deserialize_session_message, serialize_session_message
 from src.plugin_runtime.hook_schema_utils import build_object_schema
 from src.plugin_runtime.host.hook_dispatcher import HookDispatchResult
 from src.plugin_runtime.host.hook_spec_registry import HookSpec, HookSpecRegistry
+from src.workspaces.bot_profile_service import PUBLIC_BOT_PROFILE_ID, bot_profile_service
+from src.workspaces.request_context import bind_request_context
+from src.workspaces.service import workspace_service
 from src.maisaka.context.clear_context import (
     CLEAR_CONTEXT_COMMAND,
     is_clear_context_command,
@@ -246,6 +251,133 @@ class ChatBot:
                 logger.warning(f"Hook {hook_name} 返回的 message 无法反序列化，已忽略: {exc}")
         return hook_result, mutated_message
 
+    @staticmethod
+    def _extract_bot_route_command(message: SessionMessage) -> Optional[str]:
+        """仅从真实发送者的单一纯文本正文中提取 /bot 命令。"""
+
+        components = message.raw_message.components
+        if len(components) != 1 or not isinstance(components[0], TextComponent):
+            return None
+        additional_config = message.message_info.additional_config
+        generated_flags = (
+            "ai_generated",
+            "is_ai_generated",
+            "plugin_generated",
+            "is_plugin_generated",
+            "generated_by_plugin",
+        )
+        if any(additional_config.get(key) is True for key in generated_flags):
+            return None
+        generated_sources = {"ai", "assistant", "plugin", "generated"}
+        for key in ("message_source", "source_type", "generated_by"):
+            if str(additional_config.get(key) or "").strip().lower() in generated_sources:
+                return None
+        text = components[0].text.strip()
+        return text if text == "/bot" or text.startswith("/bot ") else None
+
+    async def _process_bot_route_command(
+        self,
+        message: SessionMessage,
+        command_text: Optional[str] = None,
+    ) -> bool:
+        """在消息注册前消费 /bot 控制命令，确保其对模型和记忆完全不可见。"""
+
+        command_text = command_text if command_text is not None else self._extract_bot_route_command(message)
+        if command_text is None:
+            return False
+
+        from src.services.send_service import text_to_stream
+
+        user_info = message.message_info.user_info
+        workspace_context = workspace_service.resolve_session_workspace_context(message.session_id)
+        actor = f"{message.platform}:{user_info.user_id}"
+        local_operator = is_local_operator(message.platform, message.message_info.additional_config)
+        permitted = has_command_permission(
+            "bot.route",
+            message.platform,
+            user_info.user_id,
+            message.session_id,
+            global_config.plugin.permission,
+            global_config.plugin.command_permissions,
+            local_operator=local_operator,
+        )
+        if not permitted:
+            workspace_service.record_bot_route_audit(
+                workspace_id=workspace_context.workspace_id,
+                action="bot.route.denied",
+                actor=actor,
+            )
+            await text_to_stream("你没有权限切换 Bot。", message.session_id, storage_message=False)
+            return True
+
+        parts = command_text.split(maxsplit=2)
+        action = parts[1].lower() if len(parts) >= 2 else ""
+        target = parts[2].strip() if len(parts) == 3 else ""
+        if action == "public" and not target:
+            bot_profile_service.set_route_state(
+                message.session_id,
+                PUBLIC_BOT_PROFILE_ID,
+                "public",
+                get_person_id(message.platform, user_info.user_id),
+            )
+            workspace_service.record_bot_route_audit(
+                workspace_id=workspace_context.workspace_id,
+                action="bot.route.set",
+                actor=actor,
+                profile_id=PUBLIC_BOT_PROFILE_ID,
+                route_mode="public",
+            )
+            response = "已切换到公共 Bot。"
+        elif action == "group":
+            try:
+                target_workspace, profile = bot_profile_service.resolve_group_profile(
+                    current_workspace_id=workspace_context.workspace_id,
+                    workspace_id_or_name=target,
+                )
+            except ValueError as exc:
+                response = str(exc)
+            else:
+                route_mode = "specific" if target else "group"
+                bot_profile_service.set_route_state(
+                    message.session_id,
+                    profile.id,
+                    route_mode,
+                    get_person_id(message.platform, user_info.user_id),
+                )
+                workspace_service.record_bot_route_audit(
+                    workspace_id=workspace_context.workspace_id,
+                    action="bot.route.set",
+                    actor=actor,
+                    profile_id=profile.id,
+                    route_mode=route_mode,
+                )
+                response = f"已切换到分组 Bot：{target_workspace.name}。"
+        elif action == "status" and not target:
+            active_context = workspace_service.resolve_context(message.session_id)
+            route = bot_profile_service.get_route_state(message.session_id)
+            route_mode = route.route_mode if route is not None else "workspace-default"
+            response = (
+                f"当前子系统：{active_context.workspace_name}；"
+                f"Bot：{active_context.bot_profile.profile_id}（{active_context.bot_profile.profile_type}）；"
+                f"路由：{route_mode}。"
+            )
+        elif action == "reset" and not target:
+            bot_profile_service.reset_route_state(message.session_id)
+            active_context = workspace_service.resolve_context(message.session_id)
+            workspace_service.record_bot_route_audit(
+                workspace_id=workspace_context.workspace_id,
+                action="bot.route.reset",
+                actor=actor,
+                profile_id=active_context.bot_profile.profile_id,
+                route_mode="workspace-default",
+            )
+            response = f"已恢复当前子系统默认 Bot：{active_context.bot_profile.profile_id}。"
+        else:
+            response = "用法：/bot public、/bot group [子系统ID或名称]、/bot status、/bot reset"
+
+        await text_to_stream(response, message.session_id, storage_message=False)
+        return True
+
     async def _process_commands(self, message: SessionMessage) -> tuple[bool, Optional[str], bool]:
         """使用统一组件注册表处理命令。
 
@@ -371,6 +503,8 @@ class ChatBot:
         """判断消息是否会进入内置或插件命令链。"""
 
         command_text = (message.processed_plain_text or "").strip()
+        if ChatBot._extract_bot_route_command(message) is not None:
+            return True
         if command_text in {"/offline", "/online"}:
             return True
 
@@ -739,6 +873,7 @@ class ChatBot:
             )
 
             message.session_id = session_id  # 正确初始化session_id
+            original_bot_route_command = self._extract_bot_route_command(message)
             image_process_report = process_received_images_in_message(message.raw_message.components)
             if image_process_report.compressed_count or image_process_report.discarded_count:
                 image_process_details = []
@@ -812,8 +947,6 @@ class ChatBot:
                     logger.info(f"[正则表达式过滤]消息匹配到{pattern}，filtered")
                     return
 
-            chat_manager.register_message(message)
-
             platform = message.platform
             user_id = user_info.user_id
             group_id = group_info.group_id if group_info else None
@@ -823,41 +956,53 @@ class ChatBot:
                 group_id,
                 account_id=account_id,
                 scope=scope,
-            )  # 确保会话存在
+            )  # 先确保真实会话存在，但不登记消息正文
 
-            # message.update_chat_stream(chat)
-
-            if await self._process_adapter_lifecycle_command(message):
+            if original_bot_route_command is not None and await self._process_bot_route_command(
+                message,
+                command_text=original_bot_route_command,
+            ):
                 return
 
-            # 调试用内置指令需要先写入持久化清理边界，再停止当前运行时，
-            # 避免并发消息或进程重启重新带回清理前的短期上下文。
-            if await self._process_clear_context_command(message):
-                return
+            request_context = workspace_service.build_bot_request_context(
+                message.session_id,
+                get_person_id(platform, user_id),
+                "group" if group_info is not None else "private",
+            )
+            message.bot_request_context = request_context
+            with bind_request_context(request_context):
+                chat_manager.register_message(message)
 
-            # 命令处理 - 使用新插件系统检查并处理命令。
-            # 命令处理器内部自行决定是否回复消息，这里只负责流程分发与拦截。
-            is_command, cmd_result, continue_process = await self._process_commands(message)
+                # message.update_chat_stream(chat)
 
-            # 如果是命令且不需要继续处理，则直接返回，避免落入 HeartFlow / MaiSaka。
-            if is_command and await self._handle_command_processing_result(message, cmd_result, continue_process):
-                return
+                if await self._process_adapter_lifecycle_command(message):
+                    return
 
-            # continue_flag, modified_message = await events_manager.handle_mai_events(EventType.ON_MESSAGE, message)
-            # if not continue_flag:
-            #     return
-            # if modified_message and modified_message._modify_flags.modify_plain_text:
-            #     message.processed_plain_text = modified_message.plain_text
+                # 调试用内置指令需要先写入持久化清理边界，再停止当前运行时，
+                # 避免并发消息或进程重启重新带回清理前的短期上下文。
+                if await self._process_clear_context_command(message):
+                    return
 
-            async def preprocess():
+                # 命令处理 - 使用新插件系统检查并处理命令。
+                # 命令处理器内部自行决定是否回复消息，这里只负责流程分发与拦截。
+                is_command, cmd_result, continue_process = await self._process_commands(message)
+
+                # 如果是命令且不需要继续处理，则直接返回，避免落入 HeartFlow / MaiSaka。
+                if is_command and await self._handle_command_processing_result(message, cmd_result, continue_process):
+                    return
+
+                # continue_flag, modified_message = await events_manager.handle_mai_events(EventType.ON_MESSAGE, message)
+                # if not continue_flag:
+                #     return
+                # if modified_message and modified_message._modify_flags.modify_plain_text:
+                #     message.processed_plain_text = modified_message.plain_text
+
                 if group_info is None:
                     logger.debug("[私聊]检测到私聊消息，路由到 Maisaka")
                     await self.heartflow_message_receiver.process_message(message)
                 else:
                     logger.debug("[群聊]检测到群聊消息，路由到 Maisaka")
                     await self.heartflow_message_receiver.process_message(message)
-
-            await preprocess()
 
         except Exception as e:
             logger.error(f"预处理消息失败: {e}")

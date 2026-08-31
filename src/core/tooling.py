@@ -13,6 +13,7 @@ from typing import Any, Dict, Literal, Optional, Protocol, runtime_checkable
 
 from src.common.logger import get_logger
 from src.llm_models.payload_content.tool_option import ToolDefinitionInput
+from src.workspaces import get_current_request_context, workspace_service
 
 logger = get_logger("core.tooling")
 
@@ -204,14 +205,17 @@ class ToolAvailabilityContext:
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     denied_tools: frozenset[str] = field(default_factory=frozenset)
 
-    def is_tool_allowed(self, tool_name: str) -> bool:
-        """根据当前 Workspace 策略判断工具是否应暴露。"""
+    def is_tool_allowed(self, tool_name: str, component_name: str = "") -> bool:
+        """按完整组件名判断工具；legacy 前缀仅用于兼容旧 Workspace 规则。"""
 
-        if tool_name in self.denied_tools:
+        candidates = {tool_name, f"legacy.{tool_name}"}
+        if component_name:
+            candidates.add(component_name)
+        if candidates.intersection(self.denied_tools):
             return False
         if self.inherit_global_tools:
             return True
-        return tool_name in self.allowed_tools
+        return bool(candidates.intersection(self.allowed_tools))
 
 
 @dataclass(slots=True)
@@ -304,6 +308,31 @@ class ToolRegistry:
 
         self._providers = [item for item in self._providers if item.provider_name != provider_name]
 
+    @staticmethod
+    def _apply_current_request_policy(
+        context: Optional[ToolAvailabilityContext],
+    ) -> Optional[ToolAvailabilityContext]:
+        """用当前消息的 BotProfile 策略覆盖调用方可能缓存的 Workspace 规则。"""
+
+        request_context = get_current_request_context()
+        if request_context is None:
+            return context
+        workspace_context = workspace_service.resolve_context_for_request(request_context)
+        return ToolAvailabilityContext(
+            session_id=request_context.session_id,
+            stream_id=context.stream_id if context is not None else "",
+            is_group_chat=(context.is_group_chat if context is not None else request_context.audience_type == "group"),
+            group_id=context.group_id if context is not None else "",
+            user_id=context.user_id if context is not None else "",
+            platform=context.platform if context is not None else "",
+            workspace_id=request_context.workspace_id,
+            memory_space_id=request_context.home_memory_space_id,
+            workspace_policy_revision=request_context.policy_revision,
+            inherit_global_tools=workspace_context.inherit_global_tools,
+            allowed_tools=workspace_context.allowed_tools,
+            denied_tools=workspace_context.denied_tools,
+        )
+
     async def list_tools(
         self,
         context: Optional[ToolAvailabilityContext] = None,
@@ -314,6 +343,7 @@ class ToolRegistry:
             list[ToolSpec]: 去重后的工具列表。
         """
 
+        context = self._apply_current_request_policy(context)
         collected_specs: list[ToolSpec] = []
         seen_names: set[str] = set()
 
@@ -330,7 +360,11 @@ class ToolRegistry:
                 seen_names.add(spec.name)
                 collected_specs.append(spec)
         if context is not None and context.workspace_id:
-            return [spec for spec in collected_specs if context.is_tool_allowed(spec.name)]
+            return [
+                spec
+                for spec in collected_specs
+                if context.is_tool_allowed(spec.name, f"{spec.provider_name}.{spec.name}")
+            ]
         return collected_specs
 
     async def get_tool_spec(
@@ -412,17 +446,22 @@ class ToolRegistry:
                 denied_tools=frozenset(context.metadata.get("denied_tools", ())),
             )
 
-        if availability_context is not None and availability_context.workspace_id:
-            if not availability_context.is_tool_allowed(invocation.tool_name):
-                return ToolExecutionResult(
-                    tool_name=invocation.tool_name,
-                    success=False,
-                    error_message=f"当前子系统不允许使用工具：{invocation.tool_name}",
-                )
-
+        availability_context = self._apply_current_request_policy(availability_context)
         for provider in self._providers:
             provider_specs = await provider.list_tools(availability_context)
-            if any(spec.name == invocation.tool_name and spec.enabled for spec in provider_specs):
+            matching_spec = next(
+                (spec for spec in provider_specs if spec.name == invocation.tool_name and spec.enabled),
+                None,
+            )
+            if matching_spec is not None:
+                if availability_context is not None and availability_context.workspace_id:
+                    component_name = f"{matching_spec.provider_name}.{matching_spec.name}"
+                    if not availability_context.is_tool_allowed(matching_spec.name, component_name):
+                        return ToolExecutionResult(
+                            tool_name=invocation.tool_name,
+                            success=False,
+                            error_message=f"当前 BotProfile 不允许使用工具：{component_name}",
+                        )
                 try:
                     return await provider.invoke(invocation, context)
                 except Exception as exc:

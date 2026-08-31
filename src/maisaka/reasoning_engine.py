@@ -92,6 +92,7 @@ from src.maisaka.monitor.events import (
 from src.maisaka.memory.person_profile import build_person_profile_injection_messages
 from src.maisaka.context.planner_messages import build_planner_user_prefix_from_session_message
 from src.maisaka.visual.mode_utils import resolve_enable_visual_planner
+from src.workspaces import bind_request_context, create_background_task_without_request_context
 
 if TYPE_CHECKING:
     from .runtime import MaisakaHeartFlowChatting
@@ -1013,97 +1014,11 @@ class MaisakaReasoningEngine:
                 if turn_start_context.trigger_message is None:
                     continue
 
-                cached_messages = turn_start_context.cached_messages
-                trigger_message = turn_start_context.trigger_message
-
-                if turn_start_context.silent_reply_frequency:
-                    await self._handle_silent_turn(
-                        cached_messages=cached_messages,
-                        timeout_triggered=turn_start_context.timeout_triggered,
-                        proactive_triggered=turn_start_context.proactive_triggered,
-                    )
-                    continue
-
-                try:
-                    self._active_logical_turn_id = turn_start_context.logical_turn_id or uuid.uuid4().hex
-                    if force_continue_reason := self._runtime._consume_forced_turn_reason():
-                        logger.info(f"{self._runtime.log_prefix} {force_continue_reason}")
-                    planner_no_tool_count = 0
-                    mid_term_reference_refreshed = False
-                    round_index = 0
-                    while round_index < self._runtime._max_internal_rounds:
-                        pending_round_messages = await self._collect_pending_messages_before_next_round(round_index)
-                        if pending_round_messages:
-                            cached_messages = pending_round_messages
-                            trigger_message = pending_round_messages[-1]
-
-                        cycle_detail, round_text = await self._start_cycle_round(round_index)
-                        state = CycleRuntimeState()
-                        try:
-                            await self._refresh_visual_placeholders_for_cycle(cycle_detail)
-                            if not mid_term_reference_refreshed:
-                                await self._refresh_mid_term_memory_reference_for_continuation(cycle_detail)
-                                mid_term_reference_refreshed = True
-
-                            self._runtime._start_planner_continuation()
-                            await self._run_planner_request(
-                                trigger_message=trigger_message,
-                                source_messages=cached_messages or [trigger_message],
-                                round_index=round_index,
-                                round_text=round_text,
-                                state=state,
-                            )
-                            cycle_detail.time_records["planner"] = state.planner_duration_ms / 1000
-                            # logger.info(
-                            #     f"{self._runtime.log_prefix} 规划器执行完成: "
-                            #     f"回合={round_index + 1} "
-                            #     f"耗时={cycle_detail.time_records['planner']:.3f} 秒"
-                            # )
-                            (
-                                planner_no_tool_count,
-                                should_break_after_action,
-                            ) = await self._handle_planner_response_actions(
-                                response=state.response,
-                                cycle_detail=cycle_detail,
-                                state=state,
-                                planner_no_tool_count=planner_no_tool_count,
-                                planner_extra_lines=state.planner_extra_lines,
-                            )
-                            if should_break_after_action:
-                                break
-                            continue
-                        except ReqAbortException as exc:
-                            state.planner_interrupted = True
-                            state.cycle_end = CycleEnd("planner_interrupted", "Planner 被新消息打断，当前轮结束。")
-                            interrupt_result = await self._handle_planner_interrupt(
-                                exc=exc,
-                                round_index=round_index,
-                                round_text=round_text,
-                                current_stage_started_at=state.current_stage_started_at,
-                                action_tool_count=state.action_tool_count,
-                            )
-                            state.response = interrupt_result.response
-                            state.planner_extra_lines = interrupt_result.extra_lines
-                            if not interrupt_result.retry_messages:
-                                break
-
-                            cached_messages = interrupt_result.retry_messages
-                            trigger_message = interrupt_result.retry_messages[-1]
-                            continue
-                        finally:
-                            state.cycle_end = await self._finalize_cycle(
-                                cycle_detail=cycle_detail,
-                                round_index=round_index,
-                                state=state,
-                            )
-                            if not state.planner_interrupted:
-                                round_index += 1
-                finally:
-                    self._active_logical_turn_id = None
-                    if self._runtime._agent_state == self._runtime._STATE_RUNNING:
-                        self._runtime._enter_stop_state()
-                    if self._runtime._running:
-                        self._runtime._update_stage_status("等待消息", "本轮处理结束")
+                request_context = self._runtime.resolve_request_context_for_message(
+                    turn_start_context.trigger_message
+                )
+                with bind_request_context(request_context):
+                    await self._run_message_turn(turn_start_context)
         except asyncio.CancelledError:
             self._runtime._log_internal_loop_cancelled()
             raise
@@ -1120,6 +1035,101 @@ class MaisakaReasoningEngine:
             self._runtime._update_stage_status("错误", str(exc))
             logger.exception(f"{self._runtime.log_prefix} Maisaka 内部循环发生异常")
             raise
+
+    async def _run_message_turn(self, turn_start_context: TurnStartContext) -> None:
+        """在已经绑定的 BotRequestContext 内执行一轮消息驱动推理。"""
+
+        cached_messages = turn_start_context.cached_messages
+        trigger_message = turn_start_context.trigger_message
+
+        if turn_start_context.silent_reply_frequency:
+            await self._handle_silent_turn(
+                cached_messages=cached_messages,
+                timeout_triggered=turn_start_context.timeout_triggered,
+                proactive_triggered=turn_start_context.proactive_triggered,
+            )
+            return
+
+        try:
+            self._active_logical_turn_id = turn_start_context.logical_turn_id or uuid.uuid4().hex
+            if force_continue_reason := self._runtime._consume_forced_turn_reason():
+                logger.info(f"{self._runtime.log_prefix} {force_continue_reason}")
+            planner_no_tool_count = 0
+            mid_term_reference_refreshed = False
+            round_index = 0
+            while round_index < self._runtime._max_internal_rounds:
+                pending_round_messages = await self._collect_pending_messages_before_next_round(round_index)
+                if pending_round_messages:
+                    cached_messages = pending_round_messages
+                    trigger_message = pending_round_messages[-1]
+
+                cycle_detail, round_text = await self._start_cycle_round(round_index)
+                state = CycleRuntimeState()
+                try:
+                    await self._refresh_visual_placeholders_for_cycle(cycle_detail)
+                    if not mid_term_reference_refreshed:
+                        await self._refresh_mid_term_memory_reference_for_continuation(cycle_detail)
+                        mid_term_reference_refreshed = True
+
+                    self._runtime._start_planner_continuation()
+                    await self._run_planner_request(
+                        trigger_message=trigger_message,
+                        source_messages=cached_messages or [trigger_message],
+                        round_index=round_index,
+                        round_text=round_text,
+                        state=state,
+                    )
+                    cycle_detail.time_records["planner"] = state.planner_duration_ms / 1000
+                    # logger.info(
+                    #     f"{self._runtime.log_prefix} 规划器执行完成: "
+                    #     f"回合={round_index + 1} "
+                    #     f"耗时={cycle_detail.time_records['planner']:.3f} 秒"
+                    # )
+                    (
+                        planner_no_tool_count,
+                        should_break_after_action,
+                    ) = await self._handle_planner_response_actions(
+                        response=state.response,
+                        cycle_detail=cycle_detail,
+                        state=state,
+                        planner_no_tool_count=planner_no_tool_count,
+                        planner_extra_lines=state.planner_extra_lines,
+                    )
+                    if should_break_after_action:
+                        break
+                    continue
+                except ReqAbortException as exc:
+                    state.planner_interrupted = True
+                    state.cycle_end = CycleEnd("planner_interrupted", "Planner 被新消息打断，当前轮结束。")
+                    interrupt_result = await self._handle_planner_interrupt(
+                        exc=exc,
+                        round_index=round_index,
+                        round_text=round_text,
+                        current_stage_started_at=state.current_stage_started_at,
+                        action_tool_count=state.action_tool_count,
+                    )
+                    state.response = interrupt_result.response
+                    state.planner_extra_lines = interrupt_result.extra_lines
+                    if not interrupt_result.retry_messages:
+                        break
+
+                    cached_messages = interrupt_result.retry_messages
+                    trigger_message = interrupt_result.retry_messages[-1]
+                    continue
+                finally:
+                    state.cycle_end = await self._finalize_cycle(
+                        cycle_detail=cycle_detail,
+                        round_index=round_index,
+                        state=state,
+                    )
+                    if not state.planner_interrupted:
+                        round_index += 1
+        finally:
+            self._active_logical_turn_id = None
+            if self._runtime._agent_state == self._runtime._STATE_RUNNING:
+                self._runtime._enter_stop_state()
+            if self._runtime._running:
+                self._runtime._update_stage_status("等待消息", "本轮处理结束")
 
     async def _handle_silent_turn(
         self,
@@ -1438,7 +1448,9 @@ class MaisakaReasoningEngine:
                 *removed_behavior_reference_messages,
                 *process_result.removed_messages,
             ]
-            asyncio.create_task(self._runtime._trigger_trimmed_history_learning(learning_messages))
+            create_background_task_without_request_context(
+                self._runtime._trigger_trimmed_history_learning(learning_messages)
+            )
 
     @staticmethod
     def _calculate_similarity(text1: str, text2: str) -> float:
@@ -1909,7 +1921,7 @@ class MaisakaReasoningEngine:
             return
 
         try:
-            asyncio.get_running_loop().create_task(
+            create_background_task_without_request_context(
                 self._recognize_tool_result_media_images(readable_images, media_index)
             )
         except RuntimeError:
