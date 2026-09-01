@@ -16,7 +16,7 @@ from .knowledge_types import (
 
 logger = get_logger("A_Memorix.MetadataSchema")
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION = 9
 
 
@@ -2097,6 +2097,22 @@ class MetadataSchemaMixin:
         )""")
         cursor.execute("""CREATE INDEX IF NOT EXISTS idx_memory_scope_members_scope
             ON memory_scope_members(security_domain, memory_space_id, partition_id, object_type)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS memory_transfer_objects (
+            target_object_id TEXT PRIMARY KEY, object_type TEXT NOT NULL,
+            source_object_id TEXT NOT NULL, source_space_id TEXT NOT NULL,
+            source_partition_id TEXT NOT NULL, target_space_id TEXT NOT NULL,
+            target_partition_id TEXT NOT NULL, security_domain TEXT NOT NULL,
+            content_fingerprint TEXT NOT NULL DEFAULT '', root_object_type TEXT NOT NULL DEFAULT '',
+            root_object_id TEXT NOT NULL DEFAULT '', snapshot_json TEXT NOT NULL DEFAULT '{}',
+            source_version TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+        )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_memory_transfer_objects_source
+            ON memory_transfer_objects(object_type, source_object_id, source_partition_id)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS memory_transfer_operations (
+            operation_key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, mode TEXT NOT NULL,
+            status TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}', error_code TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL, updated_at REAL NOT NULL
+        )""")
         cursor.execute("""CREATE TABLE IF NOT EXISTS relation_scope_states (
             partition_id TEXT NOT NULL, relation_hash TEXT NOT NULL,
             confidence REAL DEFAULT 1.0, is_inactive INTEGER DEFAULT 0,

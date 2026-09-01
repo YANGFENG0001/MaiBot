@@ -312,6 +312,26 @@ class AMemorixHostService:
         if component_name == "memory_stats":
             return kernel.memory_stats()
 
+        if component_name in {
+            "list_scoped_objects",
+            "inspect_object",
+            "link_object_to_scope",
+            "copy_object_to_scope",
+            "get_transfer_operation",
+            "reconcile_transfer_operation",
+        }:
+            from .core.runtime.services.memory_transfer_service import MemoryTransferAuthorityService
+
+            if kernel.metadata_store is None:
+                raise RuntimeError("A_Memorix metadata store 尚未就绪")
+            service = MemoryTransferAuthorityService(kernel.metadata_store)
+            if component_name == "get_transfer_operation":
+                return service.get_transfer_operation(str(payload.get("operation_key", "") or ""))
+            if component_name == "reconcile_transfer_operation":
+                return service.reconcile_transfer_operation(str(payload.get("operation_key", "") or ""))
+            handler = getattr(service, component_name)
+            return handler(payload)
+
         if is_admin_component(component_name):
             try:
                 command = parse_admin_command(component_name, payload)
