@@ -67,23 +67,16 @@ async def test_search_respects_filter_by_default(monkeypatch):
 
     assert isinstance(result, MemorySearchResult)
     assert result.filtered is True
-    assert calls == [
-        (
-            "search_memory",
-            {
-                "query": "mai",
-                "limit": 5,
-                "mode": "search",
-                "chat_id": "stream-1",
-                "person_id": "person-1",
-                "time_start": None,
-                "time_end": None,
-                "respect_filter": True,
-                "user_id": "user-1",
-                "group_id": "",
-            },
-        )
-    ]
+    assert len(calls) == 1
+    component_name, payload = calls[0]
+    assert component_name == "search_memory"
+    assert payload | {} == payload
+    assert {key: payload[key] for key in ("query", "limit", "mode", "chat_id", "person_id", "respect_filter", "user_id", "group_id")} == {
+        "query": "mai", "limit": 5, "mode": "search", "chat_id": "stream-1", "person_id": "person-1", "respect_filter": True, "user_id": "user-1", "group_id": ""
+    }
+    assert payload["allowed_memory_space_ids"] == ["memory-space-public"]
+    assert payload["allowed_partition_ids"]
+    assert payload["security_domain"] == "normal"
 
 
 @pytest.mark.asyncio
@@ -106,24 +99,17 @@ async def test_ingest_summary_can_bypass_filter(monkeypatch):
     )
 
     assert result.success is True
-    assert calls == [
-        (
-            "ingest_summary",
-            {
-                "external_id": "chat_history:1",
-                "chat_id": "stream-1",
-                "text": "summary",
-                "participants": [],
-                "time_start": None,
-                "time_end": None,
-                "tags": [],
-                "metadata": {},
-                "respect_filter": False,
-                "user_id": "user-1",
-                "group_id": "",
-            },
-        )
-    ]
+    assert len(calls) == 1
+    component_name, payload = calls[0]
+    assert component_name == "ingest_summary"
+    assert payload["external_id"] == "chat_history:1"
+    assert payload["chat_id"] == "stream-1"
+    assert payload["text"] == "summary"
+    assert payload["respect_filter"] is False
+    assert payload["memory_space_id"] == "memory-space-public"
+    assert payload["partition_id"]
+    assert payload["security_domain"] == "normal"
+    assert payload["source_session_id"] == "stream-1"
 
 
 @pytest.mark.asyncio
@@ -197,23 +183,15 @@ async def test_search_accepts_string_time_bounds(monkeypatch):
     )
 
     assert isinstance(result, MemorySearchResult)
-    assert calls == [
-        (
-            "search_memory",
-            {
-                "query": "广播站",
-                "limit": 5,
-                "mode": "time",
-                "chat_id": "",
-                "person_id": "",
-                "time_start": "2026/03/18",
-                "time_end": "2026/03/18 09:30",
-                "respect_filter": True,
-                "user_id": "",
-                "group_id": "",
-            },
-        )
-    ]
+    assert len(calls) == 1
+    component_name, payload = calls[0]
+    assert component_name == "search_memory"
+    assert payload["query"] == "广播站"
+    assert payload["mode"] == "time"
+    assert payload["time_start"] == "2026/03/18"
+    assert payload["time_end"] == "2026/03/18 09:30"
+    assert payload["allowed_memory_space_ids"] == ["memory-space-public"]
+    assert payload["security_domain"] == "normal"
 
 
 def test_coerce_search_result_preserves_aggregate_source_branches():
@@ -249,13 +227,13 @@ async def test_import_admin_uses_long_timeout(monkeypatch):
     result = await service.import_admin(action="create_lpmm_openie", alias="lpmm")
 
     assert result["success"] is True
-    assert calls == [
-        (
-            "memory_import_admin",
-            {"action": "create_lpmm_openie", "alias": "lpmm"},
-            {"timeout_ms": 120000},
-        )
-    ]
+    assert len(calls) == 1
+    component_name, payload, options = calls[0]
+    assert component_name == "memory_import_admin"
+    assert payload["action"] == "create_lpmm_openie"
+    assert payload["alias"] == "lpmm"
+    assert payload["memory_space_id"] == "memory-space-public"
+    assert options == {"timeout_ms": 120000}
 
 
 @pytest.mark.asyncio

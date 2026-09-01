@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import blake2b, sha256
 from pathlib import Path
 from typing import Any, Dict, Sequence
+from unittest.mock import patch
 
 import math
 import unicodedata
@@ -116,15 +117,19 @@ def _runtime_config(data_dir: Path) -> Dict[str, Any]:
 
 
 async def _open_runtime(data_dir: Path) -> SDKMemoryKernel:
+    embedding = OfflineDeterministicEmbedding(EMBEDDING_DIMENSION)
+    await embedding.initialize()
     kernel = SDKMemoryKernel(
         plugin_root=Path.cwd(),
         config=_runtime_config(data_dir),
     )
-    await kernel.initialize()
+    with patch(
+        "src.A_memorix.core.runtime.sdk_memory_kernel.create_embedding_api_adapter",
+        return_value=embedding,
+    ):
+        await kernel.initialize()
     await kernel._stop_background_tasks()
 
-    embedding = OfflineDeterministicEmbedding(EMBEDDING_DIMENSION)
-    await embedding.initialize()
     kernel.embedding_manager = embedding
     kernel.embedding_dimension = EMBEDDING_DIMENSION
     if kernel.relation_write_service is not None:

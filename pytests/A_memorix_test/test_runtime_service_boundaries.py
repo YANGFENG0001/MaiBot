@@ -1219,6 +1219,9 @@ async def test_ingest_service_uses_kernel_patched_write_boundaries(
         def upsert_external_memory_ref(self, **kwargs: Any) -> None:
             self.external_refs.append(kwargs)
 
+        def register_scope_member(self, **kwargs: Any) -> None:
+            del kwargs
+
     class FakeVectorStore:
         def __init__(self) -> None:
             self.ids: list[str] = []

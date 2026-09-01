@@ -32,6 +32,9 @@ class _FakeMetadataStore:
     def upsert_external_memory_ref(self, **kwargs: Any) -> None:
         self.external_refs.append(dict(kwargs))
 
+    def register_scope_member(self, **kwargs: Any) -> None:
+        del kwargs
+
     def upsert_fact_claim(self, **kwargs: Any) -> Dict[str, Any]:
         payload = {"claim_id": f"claim-{len(self.fact_claims) + 1}", **kwargs}
         self.fact_claims.append(payload)
