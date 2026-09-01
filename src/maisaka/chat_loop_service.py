@@ -1364,7 +1364,20 @@ class MaisakaChatLoopService:
         *,
         request_kind: str,
     ) -> List[LLMContextMessage]:
-        """按请求类型过滤不应暴露的历史工具链。"""
+        """按请求类型和安全域过滤不应暴露的历史工具链。"""
+
+        request_context = get_current_request_context()
+        if request_context is not None:
+            selected_history = [
+                message
+                for message in selected_history
+                if message.security_domain == request_context.security_domain
+                and not (
+                    isinstance(message, SessionBackedMessage)
+                    and message.original_message is not None
+                    and not message.original_message.model_visible
+                )
+            ]
 
         if request_kind == "expression_selector":
             return [message for message in selected_history if isinstance(message, SessionBackedMessage)]

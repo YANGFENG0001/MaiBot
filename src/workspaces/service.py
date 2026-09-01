@@ -39,6 +39,9 @@ logger = get_logger("workspace")
 
 DEFAULT_WORKSPACE_ID = "workspace-default"
 PUBLIC_MEMORY_SPACE_ID = "memory-space-public"
+KAMI_MEMORY_SPACE_ID = "memory-space-kami"
+KAMI_PERSONA_PROFILE_ID = "persona-profile-kami"
+KAMI_BOT_PROFILE_ID = "bot-profile-kami"
 
 
 class WorkspaceService:
@@ -61,6 +64,58 @@ class WorkspaceService:
                     updated_at=now,
                 )
                 session.add(memory_space)
+                session.flush()
+
+            kami_space = session.get(MemorySpace, KAMI_MEMORY_SPACE_ID)
+            if kami_space is None:
+                kami_space = MemorySpace(
+                    id=KAMI_MEMORY_SPACE_ID,
+                    name="Kami 管理记忆库",
+                    description="仅供授权管理模式使用的独立安全域",
+                    space_type="kami",
+                    strict_isolation=True,
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(kami_space)
+                session.flush()
+
+            kami_persona = session.get(PersonaProfile, KAMI_PERSONA_PROFILE_ID)
+            if kami_persona is None:
+                kami_persona = PersonaProfile(
+                    id=KAMI_PERSONA_PROFILE_ID,
+                    name="Kami 管理人设",
+                    description="与普通聊天完全隔离的管理模式人设",
+                    nickname="Kami",
+                    alias_names_json="[]",
+                    personality="审慎、准确、严格保护隐私",
+                    behavior_style="以管理员安全审计视角工作，不泄漏受保护正文",
+                    reply_style="简洁、明确地说明操作结果和权限边界",
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(kami_persona)
+                session.flush()
+
+            kami_profile = session.get(BotProfile, KAMI_BOT_PROFILE_ID)
+            if kami_profile is None:
+                kami_profile = BotProfile(
+                    id=KAMI_BOT_PROFILE_ID,
+                    name="Kami 管理 Bot",
+                    profile_type="kami",
+                    parent_profile_id=None,
+                    persona_profile_id=kami_persona.id,
+                    home_memory_space_id=kami_space.id,
+                    inherit_parent_persona=False,
+                    inherit_parent_tools=False,
+                    inherit_parent_plugins=False,
+                    enabled=True,
+                    is_system=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(kami_profile)
                 session.flush()
 
             public_profile = session.get(BotProfile, PUBLIC_BOT_PROFILE_ID)
@@ -465,6 +520,54 @@ class WorkspaceService:
                 default_memory_space_id=workspace.memory_space_id,
                 policy_revision=workspace.policy_revision,
             )
+
+    def build_kami_request_context(
+        self,
+        session_id: str,
+        person_id: str,
+        audience_type: str,
+    ) -> BotRequestContext:
+        """为已通过 KamiSession 校验的消息创建强制管理安全上下文。"""
+
+        if audience_type not in {"private", "group"}:
+            raise ValueError("audience_type 只能是 private/group")
+        self.ensure_defaults()
+        PartitionService(get_db_session).ensure_shared_partition(KAMI_MEMORY_SPACE_ID, "kami")
+        PartitionService(get_db_session).ensure_person_partition(KAMI_MEMORY_SPACE_ID, person_id, "kami")
+        PartitionService(get_db_session).ensure_conversation_partition(KAMI_MEMORY_SPACE_ID, session_id, "kami")
+        with get_db_session() as session:
+            workspace = self._resolve_workspace(session, session_id)
+            profile = session.get(BotProfile, KAMI_BOT_PROFILE_ID)
+            if profile is None or not profile.enabled or profile.profile_type != "kami":
+                raise PermissionError("Kami BotProfile 不存在或已禁用")
+            decision = access_resolver.resolve(
+                session,
+                person_id=person_id,
+                session_id=session_id,
+                workspace_id=workspace.id,
+                home_space_id=KAMI_MEMORY_SPACE_ID,
+                bot_profile_id=profile.id,
+                bot_profile_type="kami",
+                audience_type=audience_type,
+            )
+            policy_revision = workspace.policy_revision + profile.policy_revision + decision.policy_revision
+        return BotRequestContext(
+            trace_id=uuid4().hex,
+            session_id=session_id,
+            workspace_id=workspace.id,
+            person_id=person_id,
+            active_bot_profile_id=profile.id,
+            active_bot_profile_type=profile.profile_type,
+            permission_group_id=decision.permission_group_id,
+            access_mode=decision.access_mode,
+            security_domain=decision.security_domain,
+            home_memory_space_id=KAMI_MEMORY_SPACE_ID,
+            readable_space_ids=decision.readable_space_ids,
+            readable_partition_ids=decision.readable_partition_ids,
+            writable_partition_ids=decision.writable_partition_ids,
+            audience_type=audience_type,
+            policy_revision=policy_revision,
+        )
 
     def build_bot_request_context(
         self,

@@ -58,6 +58,12 @@ class MaiMessage(BaseDatabaseDataModel[Messages]):
         self.session_id: str
         self.reply_to: Optional[str] = None
         self.reply_frequency: Optional[float] = None
+        self.bot_profile_id: Optional[str] = None
+        self.security_domain: str = "normal"
+        self.memory_space_id: Optional[str] = None
+        self.conversation_partition_id: Optional[str] = None
+        self.model_visible: bool = True
+        self.memory_ingest_enabled: bool = True
 
         self.processed_plain_text: Optional[str] = None
         self.raw_message: MessageSequence
@@ -85,12 +91,37 @@ class MaiMessage(BaseDatabaseDataModel[Messages]):
         obj.is_notify = db_record.is_notify
         obj.reply_to = db_record.reply_to
         obj.reply_frequency = getattr(db_record, "reply_frequency", None)
+        obj.bot_profile_id = getattr(db_record, "bot_profile_id", None)
+        obj.security_domain = getattr(db_record, "security_domain", "normal") or "normal"
+        obj.memory_space_id = getattr(db_record, "memory_space_id", None)
+        obj.conversation_partition_id = getattr(db_record, "conversation_partition_id", None)
+        obj.model_visible = bool(getattr(db_record, "model_visible", True))
+        obj.memory_ingest_enabled = bool(getattr(db_record, "memory_ingest_enabled", True))
         obj.session_id = db_record.session_id
         obj.processed_plain_text = db_record.processed_plain_text
         obj.raw_message = MessageUtils.from_db_record_msg_to_MaiSeq(db_record.raw_content)
         return obj
 
     def to_db_instance(self) -> Messages:
+        from src.common.database.migrations.v43_to_v44 import build_partition_id
+        from src.workspaces.request_context import get_current_request_context
+
+        request_context = get_current_request_context()
+        bot_profile_id = self.bot_profile_id
+        security_domain = self.security_domain or "normal"
+        memory_space_id = self.memory_space_id
+        conversation_partition_id = self.conversation_partition_id
+        if request_context is not None and request_context.session_id == self.session_id:
+            bot_profile_id = bot_profile_id or request_context.active_bot_profile_id
+            security_domain = request_context.security_domain
+            memory_space_id = memory_space_id or request_context.home_memory_space_id
+            conversation_partition_id = conversation_partition_id or build_partition_id(
+                request_context.home_memory_space_id,
+                "conversation",
+                self.session_id,
+                request_context.security_domain,
+            )
+
         additional_config = (
             json.dumps(self.message_info.additional_config) if self.message_info.additional_config else None
         )
@@ -115,6 +146,12 @@ class MaiMessage(BaseDatabaseDataModel[Messages]):
             processed_plain_text=self.processed_plain_text,
             additional_config=additional_config,
             reply_frequency=self.reply_frequency,
+            bot_profile_id=bot_profile_id,
+            security_domain=security_domain,
+            memory_space_id=memory_space_id,
+            conversation_partition_id=conversation_partition_id,
+            model_visible=self.model_visible,
+            memory_ingest_enabled=self.memory_ingest_enabled,
         )
 
     @classmethod

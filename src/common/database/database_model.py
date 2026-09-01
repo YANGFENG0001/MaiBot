@@ -59,6 +59,20 @@ class Messages(SQLModel, table=True):
     reply_frequency: Optional[float] = Field(default=None, sa_column=Column(Float, nullable=True))
     # 消息发生时当前会话的生效回复频率；无法解析时为空
 
+    # Kami 子系统消息路由与记忆可见性
+    bot_profile_id: Optional[str] = Field(
+        default=None, foreign_key="bot_profiles.id", index=True, max_length=64
+    )  # 消息归属的 BotProfile；未路由时为空
+    security_domain: str = Field(default="normal", index=True, max_length=16)  # 安全域：normal/kami
+    memory_space_id: Optional[str] = Field(
+        default=None, foreign_key="memory_spaces.id", index=True, max_length=64
+    )  # 消息所属逻辑记忆空间
+    conversation_partition_id: Optional[str] = Field(
+        default=None, foreign_key="memory_partitions.id", index=True, max_length=96
+    )  # 消息所属会话记忆分区
+    model_visible: bool = Field(default=True, index=True)  # 是否对模型可见
+    memory_ingest_enabled: bool = Field(default=True, index=True)  # 是否允许进入记忆
+
 
 class ModelUsage(SQLModel, table=True):
     __tablename__ = "llm_usage"  # type: ignore
@@ -973,4 +987,64 @@ class WorkspaceAuditLog(SQLModel, table=True):
     action: str = Field(index=True, max_length=100)
     actor: str = Field(default="system", max_length=64)
     details_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class KamiSessionState(SQLModel, table=True):
+    """Kami 管理模式会话状态，按 session_id + person_id 生效。"""
+
+    __tablename__ = "kami_session_states"  # type: ignore
+
+    id: str = Field(primary_key=True, max_length=64)
+    session_id: str = Field(index=True, max_length=255)
+    person_id: str = Field(index=True, max_length=255)
+    kami_bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    activated_from_bot_profile_id: str = Field(default="", index=True, max_length=64)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    status: str = Field(default="active", index=True, max_length=16)
+    activated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+    expires_at: datetime = Field(sa_column=Column(DateTime, index=True, nullable=False))
+    last_used_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+    process_boot_id: str = Field(index=True, max_length=64)
+    revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
+
+
+class BotControlAudit(SQLModel, table=True):
+    """Bot/Kami 控制命令审计；不保存命令正文或消息正文。"""
+
+    __tablename__ = "bot_control_audit"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    session_id: str = Field(default="", index=True, max_length=255)
+    person_id: str = Field(default="", index=True, max_length=255)
+    platform: str = Field(default="", index=True, max_length=100)
+    command: str = Field(index=True, max_length=64)
+    before_bot_profile_id: str = Field(default="", index=True, max_length=64)
+    after_bot_profile_id: str = Field(default="", index=True, max_length=64)
+    permission_group_id: str = Field(default="", index=True, max_length=64)
+    result: str = Field(index=True, max_length=16)
+    reason: str = Field(default="", index=True, max_length=100)
+    metadata_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class MemoryAccessAudit(SQLModel, table=True):
+    """记忆访问审计；只保存不可逆摘要和范围元数据，不保存查询/记忆正文。"""
+
+    __tablename__ = "memory_access_audit"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    trace_id: str = Field(index=True, max_length=64)
+    session_id: str = Field(default="", index=True, max_length=255)
+    person_id: str = Field(default="", index=True, max_length=255)
+    workspace_id: str = Field(default="", index=True, max_length=64)
+    active_bot_profile_id: str = Field(default="", index=True, max_length=64)
+    permission_group_id: str = Field(default="", index=True, max_length=64)
+    access_mode: str = Field(default="normal", index=True, max_length=16)
+    query_hash: str = Field(default="", index=True, max_length=64)
+    requested_scope_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    allowed_scope_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    denied_scope_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    result_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    latency_ms: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))

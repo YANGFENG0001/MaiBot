@@ -50,6 +50,7 @@ from .v41_to_v42 import migrate_v41_to_v42
 from .v42_to_v43 import migrate_v42_to_v43
 from .v43_to_v44 import migrate_v43_to_v44
 from .v44_to_v45 import migrate_v44_to_v45
+from .v45_to_v46 import migrate_v45_to_v46
 from .version_store import SQLiteUserVersionStore
 
 EMPTY_SCHEMA_VERSION = 0
@@ -98,7 +99,8 @@ V42_SCHEMA_VERSION = 42
 V43_SCHEMA_VERSION = 43
 V44_SCHEMA_VERSION = 44
 V45_SCHEMA_VERSION = 45
-LATEST_SCHEMA_VERSION = 45
+V46_SCHEMA_VERSION = 46
+LATEST_SCHEMA_VERSION = 46
 
 _LEGACY_V1_EXCLUSIVE_TABLES = (
     "chat_streams",
@@ -692,7 +694,42 @@ class LatestSchemaVersionDetector(BaseSchemaVersionDetector):
             return None
         if not snapshot.has_column("maisaka_reply_effects", "record_blob"):
             return None
+        if not snapshot.has_table("kami_session_states"):
+            return None
+        if not snapshot.has_table("bot_control_audit"):
+            return None
+        if not snapshot.has_table("memory_access_audit"):
+            return None
+        if not snapshot.has_column("mai_messages", "security_domain"):
+            return None
+        if not snapshot.has_column("mai_messages", "model_visible"):
+            return None
+        if not snapshot.has_column("mai_messages", "memory_ingest_enabled"):
+            return None
         return LATEST_SCHEMA_VERSION
+
+
+class V45SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v45 schema 结构探测器（Kami 子系统数据层加入前）。"""
+
+    @property
+    def name(self) -> str:
+        return "v45_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        if not _detect_v37_base_schema(snapshot):
+            return None
+        if not snapshot.has_column("maisaka_reply_effects", "request_fingerprint"):
+            return None
+        if not snapshot.has_column("maisaka_reply_effects", "record_blob"):
+            return None
+        if not snapshot.has_table("memory_permission_groups"):
+            return None
+        if snapshot.has_table("kami_session_states"):
+            return None
+        if snapshot.has_column("mai_messages", "security_domain"):
+            return None
+        return V45_SCHEMA_VERSION
 
 
 class V38SchemaVersionDetector(BaseSchemaVersionDetector):
@@ -1603,6 +1640,7 @@ def build_default_schema_version_detectors() -> List[BaseSchemaVersionDetector]:
 
     return [
         LatestSchemaVersionDetector(),
+        V45SchemaVersionDetector(),
         V38SchemaVersionDetector(),
         V37SchemaVersionDetector(),
         V34SchemaVersionDetector(),
@@ -1968,6 +2006,13 @@ def build_default_migration_registry() -> MigrationRegistry:
                 name="v44_to_v45",
                 description="新增用户记忆权限组与 Bot/记忆空间双向访问规则。",
                 handler=migrate_v44_to_v45,
+            ),
+            MigrationStep(
+                version_from=V45_SCHEMA_VERSION,
+                version_to=V46_SCHEMA_VERSION,
+                name="v45_to_v46",
+                description="新增 Kami 子系统数据层：Kami 系统实体、会话状态与访问审计。",
+                handler=migrate_v45_to_v46,
             ),
         ]
     )

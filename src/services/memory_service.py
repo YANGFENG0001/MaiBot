@@ -324,27 +324,41 @@ class MemoryService:
         try:
             scope = self._resolve_scope(chat_id, memory_space_id)
             backend_limit = max(1, int(limit))
-            payload = await self._invoke(
-                "search_memory",
-                {
-                    "query": clean_query,
-                    "limit": backend_limit,
-                    "mode": mode,
-                    "chat_id": chat_id,
-                    "shared_chat_ids": list(scope.shared_session_ids) if len(scope.shared_session_ids) > 1 else [],
-                    "person_id": person_id,
-                    "time_start": normalized_time_start,
-                    "time_end": normalized_time_end,
-                    "respect_filter": bool(respect_filter),
-                    "user_id": str(user_id or "").strip(),
-                    "group_id": str(group_id or "").strip(),
-                    "allowed_memory_space_ids": list(scope.readable_space_ids),
-                    "allowed_partition_ids": list(scope.readable_partition_ids),
-                    "security_domain": scope.security_domain,
-                    "access_trace_id": scope.trace_id,
-                },
+            search_args = {
+                "query": clean_query,
+                "limit": backend_limit,
+                "mode": mode,
+                "chat_id": chat_id,
+                "shared_chat_ids": list(scope.shared_session_ids) if len(scope.shared_session_ids) > 1 else [],
+                "person_id": person_id,
+                "time_start": normalized_time_start,
+                "time_end": normalized_time_end,
+                "respect_filter": bool(respect_filter),
+                "user_id": str(user_id or "").strip(),
+                "group_id": str(group_id or "").strip(),
+                "allowed_memory_space_ids": list(scope.readable_space_ids),
+                "allowed_partition_ids": list(scope.readable_partition_ids),
+                "access_trace_id": scope.trace_id,
+            }
+            read_domains = ("normal", "kami") if scope.access_mode == "forced_kami" else (scope.security_domain,)
+            domain_results = []
+            for read_domain in read_domains:
+                payload = await self._invoke(
+                    "search_memory",
+                    {**search_args, "security_domain": read_domain},
+                )
+                domain_results.append(self._coerce_search_result(payload))
+            result = MemorySearchResult(
+                summary="\n".join(item.summary for item in domain_results if item.summary),
+                hits=sorted(
+                    (hit for item in domain_results for hit in item.hits),
+                    key=lambda hit: hit.score,
+                    reverse=True,
+                ),
+                filtered=any(item.filtered for item in domain_results),
+                success=all(item.success for item in domain_results),
+                error="; ".join(item.error for item in domain_results if item.error),
             )
-            result = self._coerce_search_result(payload)
             result.hits = self._filter_hits_for_scope(result.hits, scope, max(1, int(limit)))
             self._audit_scope(scope, action="search", result_count=len(result.hits), success=result.success)
             return result

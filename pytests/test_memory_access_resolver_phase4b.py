@@ -315,7 +315,7 @@ def test_kami_requires_manager_capabilities_and_writes_only_kami_space() -> None
         audience_type="private",
     )
 
-    assert decision.access_mode == "kami"
+    assert decision.access_mode == "forced_kami"
     assert decision.security_domain == "kami"
     assert "memory-space-kami" in decision.readable_space_ids
     assert decision.writable_partition_ids

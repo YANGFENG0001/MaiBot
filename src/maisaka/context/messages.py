@@ -43,6 +43,13 @@ from src.llm_models.payload_content.tool_option import ToolCall
 
 FORWARD_PREVIEW_LIMIT = 4
 FOCUS_COOLDOWN_WAKEUP_SOURCE = "focus_cooldown_wakeup"
+
+
+def _current_security_domain() -> str:
+    from src.workspaces.request_context import get_current_request_context
+
+    request_context = get_current_request_context()
+    return request_context.security_domain if request_context is not None else "normal"
 FOCUS_AT_WAKEUP_SOURCE = "focus_at_wakeup"
 FOCUS_WAKEUP_SOURCE_KINDS = frozenset({FOCUS_COOLDOWN_WAKEUP_SOURCE, FOCUS_AT_WAKEUP_SOURCE})
 
@@ -462,6 +469,7 @@ class LLMContextMessage(ABC):
     """Maisaka 内部用于组织 LLM 上下文的统一消息抽象。"""
 
     timestamp: datetime
+    security_domain: str = "normal"
 
     @property
     @abstractmethod
@@ -502,6 +510,7 @@ class SessionBackedMessage(LLMContextMessage):
     message_id: Optional[str] = None
     original_message: Optional[SessionMessage] = None
     source_kind: str = "user"
+    security_domain: str = "normal"
     context_item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
@@ -542,6 +551,11 @@ class SessionBackedMessage(LLMContextMessage):
             message_id=session_message.message_id,
             original_message=session_message,
             source_kind=source_kind,
+            security_domain=(
+                session_message.bot_request_context.security_domain
+                if session_message.bot_request_context is not None
+                else session_message.security_domain or _current_security_domain()
+            ),
         )
 
 
@@ -588,6 +602,11 @@ class ComplexSessionMessage(SessionBackedMessage):
             message_id=session_message.message_id,
             original_message=session_message,
             source_kind=source_kind,
+            security_domain=(
+                session_message.bot_request_context.security_domain
+                if session_message.bot_request_context is not None
+                else session_message.security_domain or _current_security_domain()
+            ),
             prompt_text=f"{planner_prefix}{prompt_text}",
         )
 
@@ -601,6 +620,7 @@ class ReferenceMessage(LLMContextMessage):
     reference_type: ReferenceMessageType = ReferenceMessageType.CUSTOM
     remaining_uses_value: Optional[int] = 1
     display_prefix: str = "[参考消息]"
+    security_domain: str = field(default_factory=_current_security_domain)
     context_item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
@@ -643,6 +663,7 @@ class ModelOutputContextMessage(LLMContextMessage):
 
     output_item: ModelOutputItem
     source_kind: str = "assistant"
+    security_domain: str = field(default_factory=_current_security_domain)
 
     @property
     def content(self) -> str:
@@ -712,6 +733,7 @@ class ToolResultMessage(LLMContextMessage):
     tool_call_id: str
     logical_turn_id: str
     tool_name: str = ""
+    security_domain: str = field(default_factory=_current_security_domain)
     success: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
     context_item_id: str = field(default_factory=lambda: uuid.uuid4().hex)

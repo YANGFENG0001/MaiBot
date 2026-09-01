@@ -11,6 +11,7 @@ from maim_message import MessageBase
 from src.chat.heart_flow.heartflow_message_processor import HeartFCMessageReceiver
 from src.chat.heart_flow.heartflow_manager import heartflow_manager
 from src.common.data_models.message_component_data_model import TextComponent
+from src.common.database.migrations.v43_to_v44 import build_partition_id
 from src.common.logger import get_logger
 from src.common.utils.utils_message import MessageUtils
 from src.common.utils.utils_session import SessionUtils
@@ -19,12 +20,14 @@ from src.core.announcement_manager import global_announcement_manager
 from src.core.local_operator import has_command_permission, has_plugin_management_permission, is_local_operator
 from src.person_info.person_info import get_person_id
 from src.platform_io.route_key_factory import RouteKeyFactory
+from src.services.bot_account_service import is_bot_self
 from src.plugin_runtime.component_query import component_query_service
 from src.plugin_runtime.hook_payloads import deserialize_session_message, serialize_session_message
 from src.plugin_runtime.hook_schema_utils import build_object_schema
 from src.plugin_runtime.host.hook_dispatcher import HookDispatchResult
 from src.plugin_runtime.host.hook_spec_registry import HookSpec, HookSpecRegistry
 from src.workspaces.bot_profile_service import PUBLIC_BOT_PROFILE_ID, bot_profile_service
+from src.workspaces.kami_service import kami_service
 from src.workspaces.request_context import bind_request_context
 from src.workspaces.service import workspace_service
 from src.maisaka.context.clear_context import (
@@ -275,6 +278,101 @@ class ChatBot:
         text = components[0].text.strip()
         return text if text == "/bot" or text.startswith("/bot ") else None
 
+    @staticmethod
+    def _extract_kami_command(message: SessionMessage) -> Optional[str]:
+        """仅从真实用户的单一纯文本正文中提取完整 /kami 控制命令。"""
+
+        if message.is_notify:
+            return None
+        components = message.raw_message.components
+        if len(components) != 1 or not isinstance(components[0], TextComponent):
+            return None
+        user_info = message.message_info.user_info
+        if is_bot_self(message.platform, user_info.user_id):
+            return None
+        additional_config = message.message_info.additional_config
+        generated_flags = (
+            "ai_generated",
+            "is_ai_generated",
+            "plugin_generated",
+            "is_plugin_generated",
+            "generated_by_plugin",
+        )
+        if any(additional_config.get(key) is True for key in generated_flags):
+            return None
+        generated_sources = {"ai", "assistant", "plugin", "generated"}
+        for key in ("message_source", "source_type", "generated_by"):
+            if str(additional_config.get(key) or "").strip().lower() in generated_sources:
+                return None
+        text = components[0].text.strip()
+        return text if text in {"/kami", "/kami confirm", "/kami off", "/kami status"} else None
+
+    @staticmethod
+    def _format_kami_command_response(result) -> str:
+        """把 Kami 控制结果转成用户可读提示，避免暴露任何命令正文或记忆正文。"""
+
+        reason = result.reason
+        if result.command == "kami_status":
+            status = result.status
+            if status is not None and status.active:
+                return f"Kami 管理模式已激活，剩余 {status.remaining_seconds} 秒。"
+            return "Kami 管理模式未激活。"
+        if result.result == "success" and result.activated and result.active is not None:
+            return f"Kami 管理模式已激活，剩余 {result.active.remaining_seconds} 秒。"
+        if result.result == "success" and reason == "kami.already_active" and result.active is not None:
+            return f"Kami 管理模式已处于激活状态，剩余 {result.active.remaining_seconds} 秒。"
+        if result.result == "success" and reason == "kami.group_confirm_required":
+            return "群聊启用 Kami 管理模式风险较高，请在 30 秒内发送 /kami confirm 确认。"
+        if result.result == "success" and reason == "kami.exited":
+            return "已退出 Kami 管理模式，恢复普通 Bot 路由。"
+        if reason == "kami.not_active":
+            return "Kami 管理模式当前未激活。"
+        if reason == "kami.confirm_expired":
+            return "Kami 群聊确认已过期，请重新发送 /kami。"
+        if reason == "kami.confirm_context_mismatch":
+            return "Kami 确认上下文不一致，请重新发送 /kami。"
+        if reason == "kami.config_conflict":
+            return "Kami 权限配置存在冲突，已拒绝切换。"
+        if reason == "kami.denied":
+            return "你没有权限启用 Kami 管理模式。"
+        return "Kami 控制命令未执行。"
+
+    async def _process_kami_command(
+        self,
+        message: SessionMessage,
+        command_text: Optional[str] = None,
+    ) -> bool:
+        """在消息注册前消费 /kami 控制命令，确保命令对模型和记忆不可见。"""
+
+        command_text = command_text if command_text is not None else self._extract_kami_command(message)
+        if command_text is None:
+            return False
+
+        from src.services.send_service import text_to_stream
+
+        user_info = message.message_info.user_info
+        group_info = message.message_info.group_info
+        audience_type = "group" if group_info is not None else "private"
+        person_id = get_person_id(message.platform, user_info.user_id)
+        workspace_context = workspace_service.resolve_session_workspace_context(message.session_id)
+        try:
+            active_context = workspace_service.resolve_context(message.session_id)
+            activated_from_bot_profile_id = active_context.bot_profile.profile_id
+        except Exception:
+            activated_from_bot_profile_id = workspace_context.group_bot_profile_id
+        result = kami_service.handle_command(
+            command_text,
+            session_id=message.session_id,
+            person_id=person_id,
+            platform=message.platform,
+            workspace_id=workspace_context.workspace_id,
+            activated_from_bot_profile_id=activated_from_bot_profile_id,
+            audience_type=audience_type,
+        )
+        response = self._format_kami_command_response(result)
+        await text_to_stream(response, message.session_id, storage_message=False)
+        return True
+
     async def _process_bot_route_command(
         self,
         message: SessionMessage,
@@ -504,6 +602,8 @@ class ChatBot:
 
         command_text = (message.processed_plain_text or "").strip()
         if ChatBot._extract_bot_route_command(message) is not None:
+            return True
+        if ChatBot._extract_kami_command(message) is not None:
             return True
         if command_text in {"/offline", "/online"}:
             return True
@@ -874,6 +974,7 @@ class ChatBot:
 
             message.session_id = session_id  # 正确初始化session_id
             original_bot_route_command = self._extract_bot_route_command(message)
+            original_kami_command = self._extract_kami_command(message)
             image_process_report = process_received_images_in_message(message.raw_message.components)
             if image_process_report.compressed_count or image_process_report.discarded_count:
                 image_process_details = []
@@ -964,10 +1065,46 @@ class ChatBot:
             ):
                 return
 
+            if original_kami_command is not None and await self._process_kami_command(
+                message,
+                command_text=original_kami_command,
+            ):
+                return
+
+            person_id = get_person_id(platform, user_id)
+            audience_type = "group" if group_info is not None else "private"
+            workspace_context = workspace_service.resolve_session_workspace_context(message.session_id)
+            active_kami = kami_service.resolve_active(
+                session_id=message.session_id,
+                person_id=person_id,
+                workspace_id=workspace_context.workspace_id,
+                audience_type=audience_type,
+            )
+            if active_kami is not None:
+                request_context = workspace_service.build_kami_request_context(
+                    message.session_id,
+                    person_id,
+                    audience_type,
+                )
+                message.bot_request_context = request_context
+                message.bot_profile_id = request_context.active_bot_profile_id
+                message.security_domain = request_context.security_domain
+                message.memory_space_id = request_context.home_memory_space_id
+                message.conversation_partition_id = build_partition_id(
+                    request_context.home_memory_space_id,
+                    "conversation",
+                    message.session_id,
+                    request_context.security_domain,
+                )
+                with bind_request_context(request_context):
+                    chat_manager.register_message(message)
+                    await self.heartflow_message_receiver.process_message(message)
+                return
+
             request_context = workspace_service.build_bot_request_context(
                 message.session_id,
-                get_person_id(platform, user_id),
-                "group" if group_info is not None else "private",
+                person_id,
+                audience_type,
             )
             message.bot_request_context = request_context
             with bind_request_context(request_context):

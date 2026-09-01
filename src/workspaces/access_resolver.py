@@ -77,7 +77,9 @@ class AccessResolver:
             self._validate_bot_rules(session, group.id, bot_profile_id, bot_profile_type)
 
         if bot_profile_type == "kami":
-            return self._resolve_kami(session, group, context, capabilities, audience_type)
+            return self._resolve_kami(
+                session, group, context, capabilities, audience_type, person_id, session_id
+            )
 
         rules = self._rules(session, group.id if group else "")
         self.validate_rule_conflicts(rules)
@@ -143,6 +145,8 @@ class AccessResolver:
         context: Optional[MemoryPermissionGroupContext],
         capabilities: frozenset[str],
         audience_type: str,
+        person_id: str,
+        session_id: str,
     ) -> MemoryAccessDecision:
         if (
             group is None
@@ -157,19 +161,15 @@ class AccessResolver:
             for row in session.exec(select(MemorySpace).where(MemorySpace.enabled == True)).all()  # noqa: E712
         )
         partitions = self._partitions(session, spaces, security_domain=None)
-        kami_writable = tuple(
-            item.id
-            for item in session.exec(
-                select(MemoryPartition).where(
-                    MemoryPartition.memory_space_id == "memory-space-kami",
-                    MemoryPartition.security_domain == "kami",
-                    MemoryPartition.enabled == True,  # noqa: E712
-                )
-            ).all()
-        )
+        writable_candidates = {
+            build_partition_id("memory-space-kami", "shared", "shared", "kami"),
+            build_partition_id("memory-space-kami", "person", person_id, "kami"),
+            build_partition_id("memory-space-kami", "conversation", session_id, "kami"),
+        }
+        kami_writable = tuple(item for item in partitions if item in writable_candidates)
         return MemoryAccessDecision(
             group.id,
-            "kami",
+            "forced_kami",
             "kami",
             spaces,
             partitions,
@@ -316,7 +316,12 @@ class AccessResolver:
         if rule.space_selector == "public":
             return {"memory-space-public"}
         if rule.space_selector == "specific":
-            return {rule.memory_space_id} if rule.memory_space_id else set()
+            if not rule.memory_space_id or rule.memory_space_id == "memory-space-kami":
+                return set()
+            space = session.get(MemorySpace, rule.memory_space_id)
+            if space is None or space.space_type == "kami":
+                return set()
+            return {rule.memory_space_id}
         if rule.space_selector == "all_normal":
             if "memory.read.cross_space" not in capabilities:
                 return {home_space_id}
