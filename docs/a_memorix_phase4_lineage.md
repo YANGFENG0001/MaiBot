@@ -8,6 +8,8 @@
 - 分区隔离内核提交：`7e1ee0335d6032bb92066454465fd197e95909ca`
 - MaiBot 内嵌运行时基线对齐提交：`4e22f14e84468ccc9b254e42974ba2e0e7da9c5d`
 - 权威远程政策提交：`405c97bb5`
+- LPMM 显式配置修复提交：`b00584b3c`
+- MaiBot 最新正式 subtree split：`b00584b3c`
 - MaiBot 临时定向移植提交：`6f9baf9e1f7f704d2281553fe0cc6a27f91c1083`
 
 ## 正式同步规则
@@ -16,9 +18,13 @@
 
 ## 阶段状态
 
-Phase 4A 只有在以下条件全部成立后才可标记完成：
+截至 2026-09-01，Phase 4A 已完成正式闭环：
 
-1. 权威分支包含内核提交和与 MaiBot 内嵌运行时一致的完整树；
-2. MaiBot 已建立正式 subtree 来源记录并完成 pull；
-3. 临时移植与权威树没有内容差异；
-4. A-Memorix 与 MaiBot Phase 4A 回归、Ruff、编译和 diff 检查全部通过。
+1. `YANGFENG0001/A_memorix:MaiBot_branch` 包含分区隔离内核和完整 MaiBot 内嵌运行时；
+2. MaiBot 已建立正式 subtree 来源记录，并从权威分支拉取到 `b00584b3c`；
+3. `src/A_memorix` tree hash 与权威分支 tree hash 完全一致；
+4. A-Memorix 全量回归为 `722 passed, 3 skipped`；
+5. Workspace/MemoryScope/BotRequestContext 相关回归为 `18 passed`；
+6. Ruff、compileall、`git diff --check` 均通过。
+
+Phase 4B 已有实现可以恢复验收，但仍不得在验收完成前合并 `main`、发布镜像或部署服务器。

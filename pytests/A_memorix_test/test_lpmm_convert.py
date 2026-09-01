@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import json
+import os
 import subprocess
 import sys
 
@@ -18,6 +19,25 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONVERT_SCRIPT = REPO_ROOT / "src" / "A_memorix" / "scripts" / "convert_lpmm.py"
 
 
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
+    return env
+
+
+def _write_test_config(data_dir: Path) -> Path:
+    config_path = data_dir / "a_memorix_test.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        '[embedding]\nmodel_name = "pytest-lpmm"\ndimension_request_mode = "never"\n',
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def _write_parquet(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), path)
@@ -25,6 +45,7 @@ def _write_parquet(path: Path, rows: list[dict[str, object]]) -> None:
 
 def _run_convert(input_dir: Path, output_dir: Path, *, dimension: int = 2) -> subprocess.CompletedProcess[str]:
     data_dir = input_dir.parents[3]
+    config_path = _write_test_config(data_dir)
     return subprocess.run(
         [
             sys.executable,
@@ -35,6 +56,8 @@ def _run_convert(input_dir: Path, output_dir: Path, *, dimension: int = 2) -> su
             str(output_dir),
             "--data-dir",
             str(data_dir),
+            "--config",
+            str(config_path),
             "--dim",
             str(dimension),
             "--skip-relation-vector-rebuild",
@@ -45,6 +68,7 @@ def _run_convert(input_dir: Path, output_dir: Path, *, dimension: int = 2) -> su
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_subprocess_env(),
     )
 
 
@@ -77,6 +101,7 @@ def test_lpmm_converter_rejects_paths_outside_import_root(tmp_path: Path) -> Non
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=_subprocess_env(),
     )
 
     assert result.returncode != 0
