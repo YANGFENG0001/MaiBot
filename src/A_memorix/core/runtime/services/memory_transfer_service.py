@@ -177,6 +177,23 @@ class MemoryTransferAuthorityService:
         if not partitions or limit < 1 or limit > 10000:
             raise MemoryTransferAuthorityError("invalid_request")
         requested_ids = {str(x).strip() for x in request.get("object_ids", ()) if str(x).strip()}
+        filters = request.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise MemoryTransferAuthorityError("invalid_request")
+        allowed_filters = {"object_type", "ids", "fingerprint", "updated_before", "updated_after", "limit"}
+        if set(filters) - allowed_filters:
+            raise MemoryTransferAuthorityError("invalid_request")
+        filter_ids = filters.get("ids")
+        if filter_ids:
+            values = filter_ids if isinstance(filter_ids, (list, tuple, set)) else (filter_ids,)
+            filter_id_set = {str(value).strip() for value in values if str(value).strip()}
+            requested_ids = requested_ids & filter_id_set if requested_ids else filter_id_set
+        filter_limit = filters.get("limit")
+        if filter_limit is not None:
+            filter_limit = int(filter_limit)
+            if filter_limit < 1 or filter_limit > 10000:
+                raise MemoryTransferAuthorityError("invalid_request")
+            limit = min(limit, filter_limit)
         placeholders_p = ",".join("?" for _ in partitions)
         placeholders_t = ",".join("?" for _ in object_types)
         params: list[Any] = [space_id, domain, *partitions, *object_types, limit + 1]
@@ -201,10 +218,27 @@ class MemoryTransferAuthorityService:
                     "security_domain": row[4],
                 }
             )
+            if not self._matches_filters(metadata, filters):
+                continue
             items.append(metadata)
             if len(items) > limit:
                 break
         return {"items": items[:limit], "has_more": len(items) > limit, "count": min(len(items), limit)}
+
+    @staticmethod
+    def _matches_filters(metadata: Dict[str, Any], filters: Dict[str, Any]) -> bool:
+        for key, field in (("object_type", "object_type"), ("fingerprint", "content_fingerprint")):
+            expected = filters.get(key)
+            if expected:
+                values = expected if isinstance(expected, (list, tuple, set)) else (expected,)
+                if str(metadata.get(field, "")) not in {str(value) for value in values}:
+                    return False
+        source_version = str(metadata.get("source_version", ""))
+        if filters.get("updated_after") and source_version < str(filters["updated_after"]):
+            return False
+        if filters.get("updated_before") and source_version > str(filters["updated_before"]):
+            return False
+        return True
 
     def _stored_operation(self, operation_key: str) -> Dict[str, Any] | None:
         row = self._conn.execute(
