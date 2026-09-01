@@ -31,6 +31,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", "-i", required=True, help="包含 LPMM 数据的输入目录 (parquet, graphml)")
     parser.add_argument("--output", "-o", required=True, help="A_memorix 数据的输出目录")
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="A_Memorix 数据目录")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="A_Memorix 配置文件路径")
     parser.add_argument("--dim", type=int, default=384, help="Embedding 维度 (必须与 LPMM 模型匹配)")
     parser.add_argument("--batch-size", type=int, default=1024, help="Parquet 分批读取大小 (默认 1024)")
     parser.add_argument(
@@ -110,12 +111,14 @@ class LPMMConverter:
         dimension: int = 384,
         batch_size: int = 1024,
         allow_unsafe_pickle: bool = False,
+        config_path: Path = DEFAULT_CONFIG_PATH,
     ):
         self.lpmm_dir = lpmm_data_dir
         self.output_dir = output_dir
         self.dimension = dimension
         self.batch_size = max(1, int(batch_size))
         self.allow_unsafe_pickle = bool(allow_unsafe_pickle)
+        self.config_path = Path(config_path).expanduser().resolve()
 
         self.vector_dir = output_dir / "vectors"
         self.paragraph_vector_dir = self.vector_dir / "paragraph"
@@ -190,7 +193,7 @@ class LPMMConverter:
             raise ValueError("输入目录至少需要 paragraph.parquet 或 entity.parquet")
 
     def _load_plugin_config(self) -> Dict[str, Any]:
-        config_path = DEFAULT_CONFIG_PATH
+        config_path = self.config_path
         if not config_path.exists():
             raise FileNotFoundError(f"A_Memorix 配置不存在，无法确定 Embedding 指纹: {config_path}")
         with open(config_path, "r", encoding="utf-8") as f:
@@ -529,6 +532,7 @@ def main():
         dimension=args.dim,
         batch_size=args.batch_size,
         allow_unsafe_pickle=bool(args.allow_unsafe_pickle),
+        config_path=Path(args.config),
     )
     converter.run()
 
