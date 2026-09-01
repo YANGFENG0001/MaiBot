@@ -31,6 +31,7 @@ from src.common.logger import get_logger
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
 from .partition_service import PartitionService
+from src.common.database.migrations.v43_to_v44 import build_partition_id
 from .request_context import BotRequestContext, SessionWorkspaceContext, get_current_request_context
 
 logger = get_logger("workspace")
@@ -708,12 +709,25 @@ class WorkspaceService:
                 shared_session_ids = tuple(dict.fromkeys(str(item) for item in sessions if str(item).strip()))
         if clean_session_id and clean_session_id not in shared_session_ids:
             shared_session_ids = (*shared_session_ids, clean_session_id)
+        # 分区 ID 是确定性构造的；此处不返回跨 Session 的 ORM 实例，避免 detached refresh。
+        readable_partition_ids: list[str] = []
+        for readable_space_id in readable_space_ids:
+            readable_partition_ids.append(build_partition_id(readable_space_id, "shared", "shared", "normal"))
+            if clean_session_id:
+                readable_partition_ids.append(build_partition_id(readable_space_id, "conversation", clean_session_id, "normal"))
+        writable_partition_ids = [
+            build_partition_id(primary_space_id, "shared", "shared", "normal"),
+            build_partition_id(primary_space_id, "conversation", clean_session_id, "normal")
+            if clean_session_id else "",
+        ]
         return MemoryScope(
             workspace_id=workspace_id,
             primary_space_id=primary_space_id,
             readable_space_ids=readable_space_ids,
             writable_space_ids=(primary_space_id,),
             shared_session_ids=shared_session_ids,
+            readable_partition_ids=tuple(dict.fromkeys(x for x in readable_partition_ids if x)),
+            writable_partition_ids=tuple(dict.fromkeys(x for x in writable_partition_ids if x)),
         )
 
     def register_memory_objects(

@@ -106,6 +106,10 @@ class RetrievalScope:
     relation_ids: FrozenSet[str] = field(default_factory=frozenset)
     entity_ids: FrozenSet[str] = field(default_factory=frozenset)
     episode_ids: FrozenSet[str] = field(default_factory=frozenset)
+    partition_ids: FrozenSet[str] = field(default_factory=frozenset)
+    security_domain: str = "normal"
+    force_all_memory_access: bool = False
+    access_trace_id: str = ""
 
     @property
     def empty(self) -> bool:

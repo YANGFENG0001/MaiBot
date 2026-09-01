@@ -123,7 +123,7 @@ class MetadataProfileMixin:
         cursor.execute(sql, tuple(params))
         return [str(row[0]) for row in cursor.fetchall() if row and row[0]]
 
-    def get_latest_person_profile_snapshot(self, person_id: str) -> Optional[Dict[str, Any]]:
+    def get_latest_person_profile_snapshot(self, person_id: str, partition_id: str = "") -> Optional[Dict[str, Any]]:
         """获取人物最新画像快照。"""
         if not person_id:
             return None
@@ -133,13 +133,13 @@ class MetadataProfileMixin:
             SELECT
                 snapshot_id, person_id, profile_version, profile_text,
                 aliases_json, relation_edges_json, vector_evidence_json, evidence_ids_json,
-                fact_claim_ids_json, evidence_fingerprint, updated_at, expires_at, source_note
+                fact_claim_ids_json, evidence_fingerprint, updated_at, expires_at, source_note, partition_id
             FROM person_profile_snapshots
-            WHERE person_id = ?
+            WHERE person_id = ? AND (? = '' OR partition_id = ?)
             ORDER BY profile_version DESC
             LIMIT 1
             """,
-            (str(person_id),),
+            (str(person_id), str(partition_id or ""), str(partition_id or "")),
         )
         row = cursor.fetchone()
         if not row:
@@ -157,6 +157,7 @@ class MetadataProfileMixin:
         return {
             "snapshot_id": row[0],
             "person_id": row[1],
+            "partition_id": row[13] if len(row) > 13 else "",
             "profile_version": int(row[2]),
             "profile_text": row[3] or "",
             "aliases": _load_list(row[4]),
@@ -183,6 +184,7 @@ class MetadataProfileMixin:
         expires_at: Optional[float] = None,
         source_note: str = "",
         updated_at: Optional[float] = None,
+        partition_id: str = "memory-space-public:shared:normal",
     ) -> Dict[str, Any]:
         """写入人物画像快照（按 person_id 自动递增版本）。"""
         if not person_id:
@@ -200,11 +202,11 @@ class MetadataProfileMixin:
             """
             SELECT profile_version
             FROM person_profile_snapshots
-            WHERE person_id = ?
+            WHERE person_id = ? AND partition_id = ?
             ORDER BY profile_version DESC
             LIMIT 1
             """,
-            (str(person_id),),
+            (str(person_id), str(partition_id or "memory-space-public:shared:normal")),
         )
         row = cursor.fetchone()
         next_version = int(row[0]) + 1 if row else 1
@@ -214,8 +216,8 @@ class MetadataProfileMixin:
             INSERT INTO person_profile_snapshots (
                 person_id, profile_version, profile_text,
                 aliases_json, relation_edges_json, vector_evidence_json, evidence_ids_json,
-                fact_claim_ids_json, evidence_fingerprint, updated_at, expires_at, source_note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fact_claim_ids_json, evidence_fingerprint, updated_at, expires_at, source_note, partition_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(person_id),
@@ -230,6 +232,7 @@ class MetadataProfileMixin:
                 ts,
                 float(expires_at) if expires_at is not None else None,
                 str(source_note or ""),
+                str(partition_id or "memory-space-public:shared:normal"),
             ),
         )
         self._conn.commit()

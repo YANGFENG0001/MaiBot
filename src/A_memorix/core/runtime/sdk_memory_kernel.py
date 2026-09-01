@@ -884,6 +884,12 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "memory-space-public",
+        partition_id: str = "shared",
+        security_domain: str = "normal",
+        source_session_id: str = "",
+        workspace_id: str = "",
+        bot_profile_id: str = "",
     ) -> Dict[str, Any]:
         service = self._ingest_service
         return await type(service).ingest_summary(
@@ -899,6 +905,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             respect_filter=respect_filter,
             user_id=user_id,
             group_id=group_id,
+            memory_space_id=memory_space_id, partition_id=partition_id,
+            security_domain=security_domain, source_session_id=source_session_id,
+            workspace_id=workspace_id, bot_profile_id=bot_profile_id,
         )
 
     async def ingest_text(
@@ -920,6 +929,12 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "memory-space-public",
+        partition_id: str = "shared",
+        security_domain: str = "normal",
+        source_session_id: str = "",
+        workspace_id: str = "",
+        bot_profile_id: str = "",
     ) -> Dict[str, Any]:
         service = self._ingest_service
         return await type(service).ingest_text(
@@ -940,6 +955,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             respect_filter=respect_filter,
             user_id=user_id,
             group_id=group_id,
+            memory_space_id=memory_space_id, partition_id=partition_id,
+            security_domain=security_domain, source_session_id=source_session_id,
+            workspace_id=workspace_id, bot_profile_id=bot_profile_id,
         )
 
     async def process_episode_source_rebuild_batch(

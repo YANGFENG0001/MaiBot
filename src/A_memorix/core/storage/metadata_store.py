@@ -122,6 +122,9 @@ class MetadataStore(
             self._initialize_tables()
         if enforce_schema:
             self._assert_schema_compatible(db_existed=schema_existed)
+        # 防御性确保内核作用域表存在：测试夹具和旧连接可能跳过完整迁移。
+        self._ensure_memory_scope_tables(self._conn.cursor())
+        self._conn.commit()
 
         # 初始化 FTS schema（幂等）
         try:
@@ -167,6 +170,60 @@ class MetadataStore(
         if resolved is None:
             raise RuntimeError("MetadataStore 未连接数据库")
         return resolved
+
+    def register_scope_member(
+        self, *, object_type: str, object_id: str,
+        memory_space_id: str = "memory-space-public", partition_id: str = "shared",
+        security_domain: str = "normal", source_session_id: Optional[str] = None,
+    ) -> None:
+        """幂等登记 A-Memorix 对象的 partition 作用域。"""
+        object_type = str(object_type or "").strip().lower()
+        object_id = str(object_id or "").strip()
+        memory_space_id = str(memory_space_id or "memory-space-public").strip()
+        partition_id = str(partition_id or "shared").strip()
+        security_domain = str(security_domain or "normal").strip().lower()
+        if not object_type or not object_id or security_domain not in {"normal", "kami"}:
+            raise ValueError("invalid memory scope member")
+        conn = self._conn
+        self._ensure_memory_scope_tables(conn.cursor())
+        conn.commit()
+        now = datetime.now().timestamp()
+        conn.execute(
+            """INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, source_session_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (object_type, object_id, memory_space_id, partition_id, security_domain, source_session_id, now),
+        )
+        if object_type == "relation":
+            conn.execute(
+                """INSERT OR IGNORE INTO relation_scope_states
+                (partition_id, relation_hash, confidence, last_reinforced_at)
+                VALUES (?, ?, 1.0, ?)""",
+                (partition_id, object_id, now),
+            )
+        conn.commit()
+
+    def resolve_scope_object_ids(self, *, partition_ids: Sequence[str] = (),
+                                 memory_space_ids: Sequence[str] = (),
+                                 security_domain: str = "normal") -> Dict[str, set[str]]:
+        """在候选生成前把 partition scope 解析为对象 ID 集合。"""
+        clauses = ["security_domain = ?"]
+        params: List[Any] = [str(security_domain or "normal").strip().lower()]
+        partitions = tuple(dict.fromkeys(str(x).strip() for x in partition_ids if str(x).strip()))
+        spaces = tuple(dict.fromkeys(str(x).strip() for x in memory_space_ids if str(x).strip()))
+        if partitions:
+            clauses.append("partition_id IN (" + ",".join("?" for _ in partitions) + ")")
+            params.extend(partitions)
+        if spaces:
+            clauses.append("memory_space_id IN (" + ",".join("?" for _ in spaces) + ")")
+            params.extend(spaces)
+        rows = self._conn.execute(
+            "SELECT object_type, object_id FROM memory_scope_members WHERE " + " AND ".join(clauses), params
+        ).fetchall()
+        result: Dict[str, set[str]] = {}
+        for row in rows:
+            result.setdefault(str(row[0]), set()).add(str(row[1]))
+        return result
 
     def get_db_path(self) -> Path:
         """获取 SQLite 数据库文件路径。"""

@@ -252,6 +252,9 @@ class MemoryService:
                     "respect_filter": bool(respect_filter),
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
+                    "allowed_memory_space_ids": list(scope.readable_space_ids),
+                    "allowed_partition_ids": list(scope.readable_partition_ids),
+                    "security_domain": "normal",
                 },
             )
             result = self._coerce_search_result(payload)
@@ -322,6 +325,11 @@ class MemoryService:
                     "respect_filter": bool(respect_filter),
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
+                    "memory_space_id": scope.primary_space_id,
+                    "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
+                    "security_domain": "normal",
+                    "source_session_id": chat_id,
+                    "workspace_id": scope.workspace_id,
                 },
             )
             result = self._coerce_write_result(payload)
@@ -384,6 +392,11 @@ class MemoryService:
                     "respect_filter": bool(respect_filter),
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
+                    "memory_space_id": scope.primary_space_id,
+                    "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
+                    "security_domain": "normal",
+                    "source_session_id": chat_id,
+                    "workspace_id": scope.workspace_id,
                 },
             )
             result = self._coerce_write_result(payload)

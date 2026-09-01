@@ -17,6 +17,11 @@ class KernelSearchRequest:
     respect_filter: bool = True
     user_id: str = ""
     group_id: str = ""
+    allowed_memory_space_ids: Sequence[str] = ()
+    allowed_partition_ids: Sequence[str] = ()
+    security_domain: str = "normal"
+    force_all_memory_access: bool = False
+    access_trace_id: str = ""
 
 
 @dataclass

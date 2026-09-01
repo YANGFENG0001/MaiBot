@@ -44,6 +44,33 @@ class MemorySearchService(KernelServiceBase):
         scope = type(hit_service)._resolve_retrieval_scope(
             hit_service, request.chat_id, shared_chat_ids
         )
+        # Partition scope is resolved inside A-Memorix before vector/graph candidates are ranked.
+        partition_ids = tuple(str(x).strip() for x in request.allowed_partition_ids if str(x).strip())
+        memory_space_ids = tuple(str(x).strip() for x in request.allowed_memory_space_ids if str(x).strip())
+        if self.metadata_store is not None and (partition_ids or memory_space_ids):
+            scoped = self.metadata_store.resolve_scope_object_ids(
+                partition_ids=partition_ids, memory_space_ids=memory_space_ids,
+                security_domain=str(request.security_domain or "normal"),
+            )
+            from ...retrieval import RetrievalScope
+            def _intersect(kind: str) -> frozenset[str]:
+                resolved = set(scoped.get(kind, set()))
+                if scope is None:
+                    return frozenset(resolved)
+                existing = set(getattr(scope, f"{kind}_ids", frozenset()))
+                return frozenset(resolved & existing)
+
+            scope = RetrievalScope(
+                key=(scope.key if scope is not None else "partition") + ":partition",
+                paragraph_ids=_intersect("paragraph"),
+                relation_ids=_intersect("relation"),
+                entity_ids=_intersect("entity"),
+                episode_ids=_intersect("episode"),
+                partition_ids=frozenset(partition_ids),
+                security_domain=str(request.security_domain or "normal"),
+                force_all_memory_access=False,
+                access_trace_id=str(request.access_trace_id or ""),
+            )
         supported_modes = {"search", "time", "hybrid", "episode", "aggregate"}
         if mode not in supported_modes:
             return {

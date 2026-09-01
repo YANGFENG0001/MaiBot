@@ -1895,6 +1895,7 @@ class MetadataSchemaMixin:
         self._ensure_relation_graph_projection_tables(cursor)
         self._ensure_external_memory_refs_foreign_key(cursor)
         self._ensure_fuzzy_modify_plan_tables(cursor)
+        self._ensure_memory_scope_tables(cursor)
 
         # 检查paragraphs表是否有knowledge_type列
         cursor.execute("PRAGMA table_info(paragraphs)")
@@ -2084,6 +2085,42 @@ class MetadataSchemaMixin:
         self._seed_relation_graph_projection_jobs(cursor)
         self._create_performance_indexes()
         self._conn.commit()
+
+    def _ensure_memory_scope_tables(self, cursor: sqlite3.Cursor) -> None:
+        """为 A-Memorix 对象建立 partition 级成员和关系状态索引。"""
+        cursor.execute("""CREATE TABLE IF NOT EXISTS memory_scope_members (
+            object_type TEXT NOT NULL, object_id TEXT NOT NULL,
+            memory_space_id TEXT NOT NULL, partition_id TEXT NOT NULL,
+            security_domain TEXT NOT NULL DEFAULT 'normal',
+            source_session_id TEXT, created_at REAL NOT NULL,
+            PRIMARY KEY (object_type, object_id, partition_id)
+        )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_memory_scope_members_scope
+            ON memory_scope_members(security_domain, memory_space_id, partition_id, object_type)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS relation_scope_states (
+            partition_id TEXT NOT NULL, relation_hash TEXT NOT NULL,
+            confidence REAL DEFAULT 1.0, is_inactive INTEGER DEFAULT 0,
+            retention_strength REAL DEFAULT 1.0, access_count INTEGER DEFAULT 0,
+            last_reinforced_at REAL, PRIMARY KEY (partition_id, relation_hash)
+        )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_relation_scope_states_hash
+            ON relation_scope_states(relation_hash, partition_id)""")
+        cursor.execute("PRAGMA table_info(person_profile_snapshots)")
+        profile_columns = {row[1] for row in cursor.fetchall()}
+        if "partition_id" not in profile_columns:
+            cursor.execute("ALTER TABLE person_profile_snapshots ADD COLUMN partition_id TEXT NOT NULL DEFAULT 'memory-space-public:shared:normal'")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_person_profile_scope
+            ON person_profile_snapshots(partition_id, person_id, profile_version DESC)""")
+        now = datetime.now().timestamp()
+        cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'paragraph', hash, 'memory-space-public',
+            CASE WHEN source IS NULL OR source = '' THEN 'shared' ELSE 'conversation' END,
+            'normal', COALESCE(created_at, ?) FROM paragraphs""", (now,))
+        cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'relation', hash, 'memory-space-public', 'shared', 'normal',
+            COALESCE(created_at, ?) FROM relations""", (now,))
 
     def _create_temporal_indexes_if_ready(self) -> None:
         """

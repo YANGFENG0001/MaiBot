@@ -34,6 +34,7 @@ class PartitionService:
                 partition = MemoryPartition(id=partition_id, memory_space_id=memory_space_id, partition_type=partition_type, partition_key=partition_key, security_domain=domain, display_name=display_name)
                 session.add(partition)
                 session.flush()
+            session.expunge(partition)
             return partition
 
     def ensure_shared_partition(self, memory_space_id: str, security_domain: str = "") -> MemoryPartition:

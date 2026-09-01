@@ -254,6 +254,12 @@ class MemoryIngestService(KernelServiceBase):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "memory-space-public",
+        partition_id: str = "shared",
+        security_domain: str = "normal",
+        source_session_id: str = "",
+        workspace_id: str = "",
+        bot_profile_id: str = "",
     ) -> Dict[str, Any]:
         """写入已有摘要，或在正文为空时先从聊天流生成摘要。
 
@@ -305,6 +311,9 @@ class MemoryIngestService(KernelServiceBase):
             respect_filter=respect_filter,
             user_id=user_id,
             group_id=group_id,
+            memory_space_id=memory_space_id, partition_id=partition_id,
+            security_domain=security_domain, source_session_id=source_session_id,
+            workspace_id=workspace_id, bot_profile_id=bot_profile_id,
         )
 
     async def ingest_text(
@@ -326,6 +335,12 @@ class MemoryIngestService(KernelServiceBase):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "memory-space-public",
+        partition_id: str = "shared",
+        security_domain: str = "normal",
+        source_session_id: str = "",
+        workspace_id: str = "",
+        bot_profile_id: str = "",
     ) -> Dict[str, Any]:
         """按 ``external_id`` 幂等写入一条文本记忆及其派生数据。
 
@@ -388,6 +403,11 @@ class MemoryIngestService(KernelServiceBase):
             knowledge_type=resolve_knowledge_type(source_type),
             time_meta=time_meta(timestamp, time_start, time_end),
         )
+        self.metadata_store.register_scope_member(
+            object_type="paragraph", object_id=paragraph_hash,
+            memory_space_id=memory_space_id, partition_id=partition_id,
+            security_domain=security_domain, source_session_id=source_session_id or None,
+        )
         vector_result = await self._write_paragraph_vector_or_enqueue(
             paragraph_hash=paragraph_hash,
             content=content,
@@ -399,6 +419,11 @@ class MemoryIngestService(KernelServiceBase):
 
         for name in entity_tokens:
             entity_hash = self.metadata_store.add_entity(name=name, source_paragraph=paragraph_hash)
+            self.metadata_store.register_scope_member(
+                object_type="entity", object_id=entity_hash, memory_space_id=memory_space_id,
+                partition_id=partition_id, security_domain=security_domain,
+                source_session_id=source_session_id or None,
+            )
             await self._ensure_entity_vector({"hash": entity_hash, "name": name})
 
         stored_relations: List[str] = []
@@ -421,6 +446,11 @@ class MemoryIngestService(KernelServiceBase):
                 write_vector=self.relation_vectors_enabled,
             )
             self.metadata_store.link_paragraph_relation(paragraph_hash, result.hash_value)
+            self.metadata_store.register_scope_member(
+                object_type="relation", object_id=result.hash_value, memory_space_id=memory_space_id,
+                partition_id=partition_id, security_domain=security_domain,
+                source_session_id=source_session_id or None,
+            )
             stored_relations.append(result.hash_value)
 
         fact_claim_ids: List[str] = []
