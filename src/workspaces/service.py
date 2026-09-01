@@ -414,6 +414,43 @@ class WorkspaceService:
                 )
             )
 
+    def record_memory_access_audit(
+        self,
+        *,
+        workspace_id: str,
+        trace_id: str,
+        action: str,
+        access_mode: str,
+        security_domain: str,
+        readable_space_count: int,
+        readable_partition_count: int,
+        result_count: int,
+        success: bool,
+    ) -> None:
+        """记录不含查询文本、记忆正文和密钥的请求级记忆访问审计。"""
+
+        if not trace_id:
+            raise ValueError("记忆访问审计必须提供 trace_id")
+        details = {
+            "trace_id": trace_id,
+            "access_mode": access_mode,
+            "security_domain": security_domain,
+            "readable_space_count": max(0, int(readable_space_count)),
+            "readable_partition_count": max(0, int(readable_partition_count)),
+            "result_count": max(0, int(result_count)),
+            "success": bool(success),
+        }
+        with get_db_session() as session:
+            session.add(
+                WorkspaceAuditLog(
+                    workspace_id=workspace_id or None,
+                    action=f"memory.{action}",
+                    actor="memory-service",
+                    details_json=json.dumps(details, ensure_ascii=False),
+                    created_at=datetime.now(),
+                )
+            )
+
     def resolve_session_workspace_context(self, session_id: str) -> SessionWorkspaceContext:
         """解析真实聊天流所属 Workspace，不受当前用户临时 Bot 路由影响。"""
 
@@ -486,7 +523,7 @@ class WorkspaceService:
             readable_partition_ids=decision.readable_partition_ids,
             writable_partition_ids=decision.writable_partition_ids,
             audience_type=audience_type,
-            policy_revision=policy_revision,
+            policy_revision=policy_revision + decision.policy_revision,
         )
 
     def resolve_context(
@@ -680,6 +717,7 @@ class WorkspaceService:
 
         clean_session_id = str(session_id or "").strip()
         explicit_space_id = str(memory_space_id or "").strip()
+        request_context = None
         if explicit_space_id:
             space = self.get_memory_space(explicit_space_id)
             if space is None or not space.enabled:
@@ -713,17 +751,24 @@ class WorkspaceService:
                 shared_session_ids = tuple(dict.fromkeys(str(item) for item in sessions if str(item).strip()))
         if clean_session_id and clean_session_id not in shared_session_ids:
             shared_session_ids = (*shared_session_ids, clean_session_id)
-        # 分区 ID 是确定性构造的；此处不返回跨 Session 的 ORM 实例，避免 detached refresh。
-        readable_partition_ids: list[str] = []
-        for readable_space_id in readable_space_ids:
-            readable_partition_ids.append(build_partition_id(readable_space_id, "shared", "shared", "normal"))
-            if clean_session_id:
-                readable_partition_ids.append(build_partition_id(readable_space_id, "conversation", clean_session_id, "normal"))
-        writable_partition_ids = [
-            build_partition_id(primary_space_id, "shared", "shared", "normal"),
-            build_partition_id(primary_space_id, "conversation", clean_session_id, "normal")
-            if clean_session_id else "",
-        ]
+        # 请求上下文已经携带 AccessResolver 的最终分区交集，禁止在这里重新扩大或缩窄。
+        if request_context is not None and request_context.session_id == clean_session_id and not explicit_space_id:
+            readable_partition_ids = list(request_context.readable_partition_ids)
+            writable_partition_ids = list(request_context.writable_partition_ids)
+        else:
+            readable_partition_ids = []
+            for readable_space_id in readable_space_ids:
+                readable_partition_ids.append(build_partition_id(readable_space_id, "shared", "shared", "normal"))
+                if clean_session_id:
+                    readable_partition_ids.append(
+                        build_partition_id(readable_space_id, "conversation", clean_session_id, "normal")
+                    )
+            writable_partition_ids = [
+                build_partition_id(primary_space_id, "shared", "shared", "normal"),
+                build_partition_id(primary_space_id, "conversation", clean_session_id, "normal")
+                if clean_session_id
+                else "",
+            ]
         return MemoryScope(
             workspace_id=workspace_id,
             primary_space_id=primary_space_id,
@@ -732,6 +777,9 @@ class WorkspaceService:
             shared_session_ids=shared_session_ids,
             readable_partition_ids=tuple(dict.fromkeys(x for x in readable_partition_ids if x)),
             writable_partition_ids=tuple(dict.fromkeys(x for x in writable_partition_ids if x)),
+            access_mode=request_context.access_mode if request_context is not None else "normal",
+            security_domain=request_context.security_domain if request_context is not None else "normal",
+            trace_id=request_context.trace_id if request_context is not None else "",
         )
 
     def register_memory_objects(

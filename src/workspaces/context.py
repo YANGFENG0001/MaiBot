@@ -14,6 +14,9 @@ class MemoryScope:
     shared_session_ids: tuple[str, ...] = ()
     readable_partition_ids: tuple[str, ...] = ()
     writable_partition_ids: tuple[str, ...] = ()
+    access_mode: str = "normal"
+    security_domain: str = "normal"
+    trace_id: str = ""
 
     def can_read(self, memory_space_id: str) -> bool:
         return memory_space_id in self.readable_space_ids

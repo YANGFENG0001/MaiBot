@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from src.A_memorix.host_service import a_memorix_host_service
+from src.common.database.migrations.v43_to_v44 import build_partition_id
 from src.common.logger import get_logger
 from src.workspaces import PUBLIC_MEMORY_SPACE_ID, MemoryScope, get_current_request_context, workspace_service
 
@@ -205,7 +206,27 @@ class MemoryService:
     @staticmethod
     def _resolve_scope(chat_id: str, memory_space_id: str = "") -> MemoryScope:
         request_context = get_current_request_context()
-        if request_context is not None and request_context.session_id == str(chat_id or "") and not memory_space_id:
+        requested_space_id = str(memory_space_id or "").strip()
+        if requested_space_id:
+            if request_context is None or request_context.session_id != str(chat_id or ""):
+                raise PermissionError("显式记忆空间访问必须绑定 BotRequestContext")
+            if requested_space_id not in request_context.readable_space_ids:
+                raise PermissionError("当前请求无权访问指定记忆空间")
+            return MemoryScope(
+                workspace_id=request_context.workspace_id,
+                primary_space_id=requested_space_id,
+                readable_space_ids=request_context.readable_space_ids,
+                writable_space_ids=(request_context.home_memory_space_id,),
+                shared_session_ids=(request_context.session_id,),
+                readable_partition_ids=request_context.readable_partition_ids,
+                writable_partition_ids=request_context.writable_partition_ids
+                if requested_space_id == request_context.home_memory_space_id
+                else (),
+                access_mode=request_context.access_mode,
+                security_domain=request_context.security_domain,
+                trace_id=request_context.trace_id,
+            )
+        if request_context is not None and request_context.session_id == str(chat_id or ""):
             return MemoryScope(
                 workspace_id=request_context.workspace_id,
                 primary_space_id=request_context.home_memory_space_id,
@@ -214,8 +235,46 @@ class MemoryService:
                 shared_session_ids=(request_context.session_id,),
                 readable_partition_ids=request_context.readable_partition_ids,
                 writable_partition_ids=request_context.writable_partition_ids,
+                access_mode=request_context.access_mode,
+                security_domain=request_context.security_domain,
+                trace_id=request_context.trace_id,
             )
         return workspace_service.resolve_memory_scope(chat_id, memory_space_id)
+
+    @staticmethod
+    def _writable_partition(
+        scope: MemoryScope,
+        *,
+        partition_type: str,
+        partition_key: str,
+    ) -> str:
+        partition_id = build_partition_id(
+            scope.primary_space_id,
+            partition_type,
+            partition_key,
+            scope.security_domain,
+        )
+        if partition_id in scope.writable_partition_ids:
+            return partition_id
+        if scope.trace_id:
+            raise PermissionError(f"当前请求无权写入 {partition_type} 记忆分区")
+        return partition_id
+
+    @staticmethod
+    def _audit_scope(scope: MemoryScope, *, action: str, result_count: int, success: bool) -> None:
+        if not scope.trace_id:
+            return
+        workspace_service.record_memory_access_audit(
+            workspace_id=scope.workspace_id,
+            trace_id=scope.trace_id,
+            action=action,
+            access_mode=scope.access_mode,
+            security_domain=scope.security_domain,
+            readable_space_count=len(scope.readable_space_ids),
+            readable_partition_count=len(scope.readable_partition_ids),
+            result_count=result_count,
+            success=success,
+        )
 
     @staticmethod
     def _memory_space_from_hit(hit: MemoryHit) -> str:
@@ -228,6 +287,9 @@ class MemoryService:
         visible = []
         for hit in hits:
             partition_id = str(hit.metadata.get("partition_id", "") or "").strip()
+            if scope.trace_id and allowed_partitions and not partition_id:
+                logger.warning("丢弃缺少分区来源、无法完成请求级权限校验的记忆检索结果")
+                continue
             if partition_id and allowed_partitions and partition_id not in allowed_partitions:
                 logger.warning("丢弃超出当前请求分区范围的记忆检索结果")
                 continue
@@ -278,11 +340,13 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                     "allowed_memory_space_ids": list(scope.readable_space_ids),
                     "allowed_partition_ids": list(scope.readable_partition_ids),
-                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
+                    "security_domain": scope.security_domain,
+                    "access_trace_id": scope.trace_id,
                 },
             )
             result = self._coerce_search_result(payload)
             result.hits = self._filter_hits_for_scope(result.hits, scope, max(1, int(limit)))
+            self._audit_scope(scope, action="search", result_count=len(result.hits), success=result.success)
             return result
         except Exception as exc:
             logger.warning(f"长期记忆搜索失败: {exc}")
@@ -350,13 +414,18 @@ class MemoryService:
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
                     "memory_space_id": scope.primary_space_id,
-                    "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
-                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
+                    "partition_id": self._writable_partition(
+                        scope,
+                        partition_type="conversation" if chat_id else "shared",
+                        partition_key=chat_id or "shared",
+                    ),
+                    "security_domain": scope.security_domain,
                     "source_session_id": chat_id,
                     "workspace_id": scope.workspace_id,
                 },
             )
             result = self._coerce_write_result(payload)
+            self._audit_scope(scope, action="ingest_summary", result_count=len(result.stored_ids), success=result.success)
             if result.success:
                 workspace_service.register_memory_objects(
                     object_type="memory",
@@ -397,6 +466,12 @@ class MemoryService:
             scoped_metadata = dict(metadata or {})
             scoped_metadata["memory_space_id"] = scope.primary_space_id
             scoped_metadata["workspace_id"] = scope.workspace_id
+            if source_type == "person_fact" and person_ids:
+                partition_type, partition_key = "person", str(person_ids[0]).strip()
+            elif chat_id:
+                partition_type, partition_key = "conversation", chat_id
+            else:
+                partition_type, partition_key = "shared", "shared"
             payload = await self._invoke(
                 "ingest_text",
                 {
@@ -417,20 +492,26 @@ class MemoryService:
                     "user_id": str(user_id or "").strip(),
                     "group_id": str(group_id or "").strip(),
                     "memory_space_id": scope.primary_space_id,
-                    "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
-                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
+                    "partition_id": self._writable_partition(
+                        scope,
+                        partition_type=partition_type,
+                        partition_key=partition_key,
+                    ),
+                    "security_domain": scope.security_domain,
                     "source_session_id": chat_id,
                     "workspace_id": scope.workspace_id,
                 },
             )
             result = self._coerce_write_result(payload)
+            self._audit_scope(scope, action="ingest_text", result_count=len(result.stored_ids), success=result.success)
             if result.success:
                 workspace_service.register_memory_objects(
                     object_type="memory",
                     object_ids=result.stored_ids,
                     memory_space_id=scope.primary_space_id,
                     source_session_id=chat_id,
-                    partition_type="shared",
+                    partition_type=partition_type,
+                    partition_key=partition_key,
                 )
                 workspace_service.register_memory_objects(
                     object_type="person_profile",

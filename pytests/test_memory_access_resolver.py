@@ -30,3 +30,16 @@ def test_permission_rule_conflict_is_explicit():
         assert "冲突" in str(exc)
     else:
         raise AssertionError("同级规则冲突必须失败")
+
+
+def test_request_scoped_filter_rejects_hits_without_partition_provenance():
+    scope = MemoryScope(
+        workspace_id="w",
+        primary_space_id="s",
+        readable_space_ids=("s",),
+        writable_space_ids=("s",),
+        readable_partition_ids=("p-allowed",),
+        trace_id="trace-secure",
+    )
+    hits = [MemoryHit("unscoped", metadata={"memory_space_id": "s"})]
+    assert MemoryService._filter_hits_for_scope(hits, scope, 5) == []

@@ -10,6 +10,7 @@ class FakeWorkspaceService:
     def __init__(self, scope: MemoryScope) -> None:
         self.scope = scope
         self.registrations: list[dict] = []
+        self.audits: list[dict] = []
 
     def resolve_memory_scope(self, chat_id: str, memory_space_id: str = "") -> MemoryScope:
         return self.scope
@@ -20,6 +21,9 @@ class FakeWorkspaceService:
 
     def memory_object_space_ids(self, object_type: str, object_ids):
         return {}
+
+    def record_memory_access_audit(self, **kwargs) -> None:
+        self.audits.append(kwargs)
 
 
 @pytest.mark.asyncio
@@ -49,10 +53,12 @@ async def test_ingest_tags_workspace_space_and_registers_stored_objects(monkeypa
     payload = service._invoke.await_args.args[1]
     assert payload["metadata"]["memory_space_id"] == "space-a"
     assert payload["metadata"]["workspace_id"] == "workspace-a"
+    assert payload["partition_id"]
     assert {item["object_type"] for item in fake_workspace.registrations} == {"memory", "person_profile"}
     memory_registration = next(item for item in fake_workspace.registrations if item["object_type"] == "memory")
     person_registration = next(item for item in fake_workspace.registrations if item["object_type"] == "person_profile")
-    assert memory_registration["partition_type"] == "shared"
+    assert memory_registration["partition_type"] == "conversation"
+    assert memory_registration["partition_key"] == "chat-a"
     assert person_registration["partition_type"] == "person"
 
 
@@ -131,6 +137,8 @@ async def test_ingest_summary_registers_conversation_partition(monkeypatch) -> N
     result = await service.ingest_summary(external_id="summary-a", chat_id="chat-a", text="会话摘要")
 
     assert result.success is True
+    payload = service._invoke.await_args.args[1]
+    assert payload["partition_id"]
     assert fake_workspace.registrations == [
         {
             "object_type": "memory",
@@ -141,3 +149,45 @@ async def test_ingest_summary_registers_conversation_partition(monkeypatch) -> N
             "partition_key": "chat-a",
         }
     ]
+
+@pytest.mark.asyncio
+async def test_request_scoped_search_propagates_trace_and_records_body_free_audit(monkeypatch) -> None:
+    scope = MemoryScope(
+        workspace_id="workspace-a",
+        primary_space_id="space-a",
+        readable_space_ids=("space-a",),
+        writable_space_ids=("space-a",),
+        readable_partition_ids=("partition-a",),
+        trace_id="trace-a",
+        access_mode="normal",
+        security_domain="normal",
+    )
+    fake_workspace = FakeWorkspaceService(scope)
+    monkeypatch.setattr("src.services.memory_service.workspace_service", fake_workspace)
+    service = MemoryService()
+    service._invoke = AsyncMock(return_value={"success": True, "hits": []})
+
+    result = await service.search("private query", chat_id="chat-a")
+
+    assert result.success is True
+    payload = service._invoke.await_args.args[1]
+    assert payload["access_trace_id"] == "trace-a"
+    assert fake_workspace.audits == [
+        {
+            "workspace_id": "workspace-a",
+            "trace_id": "trace-a",
+            "action": "search",
+            "access_mode": "normal",
+            "security_domain": "normal",
+            "readable_space_count": 1,
+            "readable_partition_count": 1,
+            "result_count": 0,
+            "success": True,
+        }
+    ]
+    assert "private query" not in str(fake_workspace.audits)
+
+
+def test_explicit_memory_space_without_request_context_is_rejected() -> None:
+    with pytest.raises(PermissionError, match="必须绑定 BotRequestContext"):
+        MemoryService._resolve_scope("chat-a", "space-private")

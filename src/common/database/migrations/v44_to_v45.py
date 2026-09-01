@@ -20,12 +20,38 @@ def migrate_v44_to_v45(context: MigrationExecutionContext) -> None:
         "CREATE INDEX IF NOT EXISTS ix_memory_permission_context_lookup ON memory_permission_group_contexts(scope_type, workspace_id, session_id, channel_type)",
         "CREATE INDEX IF NOT EXISTS ix_memory_permission_rule_lookup ON memory_permission_rules(permission_group_id, enabled, priority)",
     )
-    context.start_progress(total_tables=8, total_records=len(statements), description="v44 -> v45 迁移进度")
+    context.start_progress(total_tables=8, total_records=len(statements) + 3, description="v44 -> v45 迁移进度")
     for index, statement in enumerate(statements):
         context.connection.exec_driver_sql(statement)
         context.advance_progress(records=1, completed_tables=1 if index < 8 else 0)
     columns = {row[1] for row in context.connection.exec_driver_sql("PRAGMA table_info(memory_spaces)")}
     if "strict_isolation" not in columns:
         context.connection.exec_driver_sql("ALTER TABLE memory_spaces ADD COLUMN strict_isolation BOOLEAN NOT NULL DEFAULT 0")
+    context.advance_progress(records=1)
+
+    # 旧 MemorySpaceACL 只有在读方和暴露方完成双向握手时，才迁移为新 Bot/Space 双向许可。
+    context.connection.exec_driver_sql(
+        """INSERT OR IGNORE INTO bot_profile_memory_rules (bot_profile_id,target_space_id,can_read,filters_json)
+        SELECT w.bot_profile_id, acl.peer_space_id, 1, COALESCE(acl.filters_json,'{}')
+        FROM memory_space_acl acl
+        JOIN memory_space_acl reciprocal
+          ON reciprocal.owner_space_id=acl.peer_space_id
+         AND reciprocal.peer_space_id=acl.owner_space_id
+         AND reciprocal.expose_to_peer=1
+        JOIN workspaces w ON w.memory_space_id=acl.owner_space_id
+        WHERE acl.can_read_from_peer=1 AND w.bot_profile_id IS NOT NULL"""
+    )
+    context.advance_progress(records=1)
+    context.connection.exec_driver_sql(
+        """INSERT OR IGNORE INTO memory_space_bot_rules (memory_space_id,bot_profile_id,can_read,filters_json)
+        SELECT acl.peer_space_id, w.bot_profile_id, 1, COALESCE(reciprocal.filters_json,'{}')
+        FROM memory_space_acl acl
+        JOIN memory_space_acl reciprocal
+          ON reciprocal.owner_space_id=acl.peer_space_id
+         AND reciprocal.peer_space_id=acl.owner_space_id
+         AND reciprocal.expose_to_peer=1
+        JOIN workspaces w ON w.memory_space_id=acl.owner_space_id
+        WHERE acl.can_read_from_peer=1 AND w.bot_profile_id IS NOT NULL"""
+    )
     context.advance_progress(records=1)
     logger.info("v44 -> v45 数据库迁移完成：用户记忆权限组与双向 ACL 已创建")
