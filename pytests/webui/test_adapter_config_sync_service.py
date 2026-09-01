@@ -28,11 +28,13 @@ def test_napcat_token_sync_updates_http_and_websocket(tmp_path: Path, monkeypatc
         {"napcat_server": {"port": 7998, "token": "new-token"}},
     )
 
+    webui_path = tmp_path / "webui.json"
     saved = json.loads(onebot_path.read_text(encoding="utf-8"))
     assert saved["network"]["httpServers"][0]["token"] == "new-token"
     assert saved["network"]["websocketServers"][0]["token"] == "new-token"
     assert saved["network"]["websocketServers"][1]["token"] == "untouched"
-    assert result["changed_paths"] == [str(onebot_path.resolve())]
+    assert json.loads(webui_path.read_text(encoding="utf-8"))["token"] == "new-token"
+    assert result["changed_paths"] == [str(onebot_path.resolve()), str(webui_path.resolve())]
 
 
 def test_snowluma_uses_its_own_profile(tmp_path: Path, monkeypatch) -> None:
