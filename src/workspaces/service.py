@@ -456,9 +456,9 @@ class WorkspaceService:
         # 权限解析只能返回真实存在的分区；为兼容旧数据库，先幂等补齐当前会话的基础分区。
         candidate_space_ids = self.resolve_readable_memory_space_ids(home_memory_space_id)
         for candidate_space_id in candidate_space_ids:
-            PartitionService().ensure_shared_partition(candidate_space_id, "normal")
-            PartitionService().ensure_person_partition(candidate_space_id, person_id, "normal")
-            PartitionService().ensure_conversation_partition(candidate_space_id, session_id, "normal")
+            PartitionService(get_db_session).ensure_shared_partition(candidate_space_id, "normal")
+            PartitionService(get_db_session).ensure_person_partition(candidate_space_id, person_id, "normal")
+            PartitionService(get_db_session).ensure_conversation_partition(candidate_space_id, session_id, "normal")
 
         with get_db_session() as session:
             decision = access_resolver.resolve(

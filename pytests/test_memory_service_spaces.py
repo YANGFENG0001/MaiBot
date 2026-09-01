@@ -141,4 +141,3 @@ async def test_ingest_summary_registers_conversation_partition(monkeypatch) -> N
             "partition_key": "chat-a",
         }
     ]
-
