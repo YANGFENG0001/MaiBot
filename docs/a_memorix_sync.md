@@ -8,7 +8,7 @@
 - 运行数据由 `storage.data_dir` 决定（当前配置模板默认 `data/a-memorix/`）
 - 旧离线脚本默认目录仍可能落在 `data/plugins/a-dawn.a-memorix/`（见脚本注释/参数说明）
 - Web 上传暂存目录为 `data/memory_upload_staging/`
-- 上游同步方式固定为 `git subtree`
+- 权威同步源固定为 `YANGFENG0001/A_memorix:MaiBot_branch`，同步方式固定为 `git subtree`
 
 ## 首次接入
 
@@ -18,7 +18,7 @@
 
 默认同步源：
 
-- 远端：`https://github.com/A-Dawn/A_memorix.git`
+- 远端：`https://github.com/YANGFENG0001/A_memorix.git`
 - 分支：`MaiBot_branch`
 - 前缀：`src/A_memorix`
 
@@ -31,7 +31,7 @@
 等价命令：
 
 ```bash
-git subtree pull --prefix=src/A_memorix https://github.com/A-Dawn/A_memorix.git MaiBot_branch --squash
+git subtree pull --prefix=src/A_memorix https://github.com/YANGFENG0001/A_memorix.git MaiBot_branch --squash
 ```
 
 ## 本地修改边界

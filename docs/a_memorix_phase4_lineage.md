@@ -1,17 +1,24 @@
-# A-Memorix Phase 4A lineage and upstream status
+# A-Memorix Phase 4A 正式同步沿革
 
-本记录说明 Phase 4A 的 A-Memorix 内核改动来源与当前同步状态，避免将本地实施分支误认为已经完成正式 upstream subtree 同步。
+本记录说明 Phase 4A 的 A-Memorix 内核改动来源和正式同步状态。A-Memorix 的唯一权威远程为用户仓库，不向 `A-Dawn/A_memorix` 创建、恢复或推送 PR。
 
-- A-Memorix upstream base: `e54bf25` (`docs: update MaiBot branch README`)
-- Local upstream implementation commit: `7e1ee03` (`feat: enforce memory spaces and partitions inside retrieval kernel`)
-- MaiBot integration commit: `6f9baf9e1f7f704d2281553fe0cc6a27f91c1083` (`feat: enforce partition isolation in A-Memorix kernel (upstream 7e1ee03)`)
-- A-Dawn/A_memorix push: `403 Permission denied`
-- `YANGFENG0001/A_memorix` fork: repository not found
+- 权威仓库：`https://github.com/YANGFENG0001/A_memorix.git`
+- 权威分支：`MaiBot_branch`
+- Phase 4A 初始基准：`e54bf256d`
+- 分区隔离内核提交：`7e1ee0335d6032bb92066454465fd197e95909ca`
+- MaiBot 内嵌运行时基线对齐提交：`4e22f14e84468ccc9b254e42974ba2e0e7da9c5d`
+- 权威远程政策提交：`405c97bb5`
+- MaiBot 临时定向移植提交：`6f9baf9e1f7f704d2281553fe0cc6a27f91c1083`
 
-## 当前状态
+## 正式同步规则
 
-Phase 4A 功能状态为 `functional-complete / upstream-trace-pending`。本地 MaiBot 实施分支已包含定向移植并通过已有专项回归；A-Memorix 独立仓库的正式 upstream 推送仍需具备 `A-Dawn/A_memorix` 写权限或可用 fork 后才能完成。
+`src/A_memorix` 必须从 `YANGFENG0001/A_memorix:MaiBot_branch` 通过 `git subtree` 同步。临时定向移植只作为历史实施记录；正式 subtree 基线建立后，后续更新只能从该权威分支拉取，并通过 tree hash 和 `git-subtree-split` 追踪来源。
 
-## 维护要求
+## 阶段状态
 
-后续涉及 `src/A_memorix/core/**` 的行为改动，仍应先提交到 A-Memorix 的 `MaiBot_branch`，再通过 subtree/定向同步进入 MaiBot。不得把本地复制、patch 文件或 MaiBot 集成提交描述为已经完成正式 upstream sync。
+Phase 4A 只有在以下条件全部成立后才可标记完成：
+
+1. 权威分支包含内核提交和与 MaiBot 内嵌运行时一致的完整树；
+2. MaiBot 已建立正式 subtree 来源记录并完成 pull；
+3. 临时移植与权威树没有内容差异；
+4. A-Memorix 与 MaiBot Phase 4A 回归、Ruff、编译和 diff 检查全部通过。

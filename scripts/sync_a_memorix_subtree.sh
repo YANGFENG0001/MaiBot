@@ -3,7 +3,7 @@
 set -euo pipefail
 
 MODE="${1:-pull}"
-REMOTE_URL="${2:-https://github.com/A-Dawn/A_memorix.git}"
+REMOTE_URL="${2:-https://github.com/YANGFENG0001/A_memorix.git}"
 BRANCH="${3:-MaiBot_branch}"
 PREFIX="src/A_memorix"
 
