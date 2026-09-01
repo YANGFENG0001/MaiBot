@@ -85,7 +85,7 @@ async def test_search_filters_private_spaces_and_preserves_legacy_records_for_pu
     assert [item.hash_value for item in result.hits] == ["a", "b"]
     payload = service._invoke.await_args.args[1]
     assert payload["shared_chat_ids"] == ["chat-a", "chat-b"]
-    assert payload["limit"] == 100
+    assert payload["limit"] == 10
 
 
 @pytest.mark.asyncio
@@ -141,3 +141,4 @@ async def test_ingest_summary_registers_conversation_partition(monkeypatch) -> N
             "partition_key": "chat-a",
         }
     ]
+

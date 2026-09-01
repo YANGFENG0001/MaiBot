@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from src.A_memorix.host_service import a_memorix_host_service
 from src.common.logger import get_logger
-from src.workspaces import PUBLIC_MEMORY_SPACE_ID, MemoryScope, workspace_service
+from src.workspaces import PUBLIC_MEMORY_SPACE_ID, MemoryScope, get_current_request_context, workspace_service
 
 
 logger = get_logger("memory_service")
@@ -204,6 +204,17 @@ class MemoryService:
 
     @staticmethod
     def _resolve_scope(chat_id: str, memory_space_id: str = "") -> MemoryScope:
+        request_context = get_current_request_context()
+        if request_context is not None and request_context.session_id == str(chat_id or "") and not memory_space_id:
+            return MemoryScope(
+                workspace_id=request_context.workspace_id,
+                primary_space_id=request_context.home_memory_space_id,
+                readable_space_ids=request_context.readable_space_ids,
+                writable_space_ids=(request_context.home_memory_space_id,),
+                shared_session_ids=(request_context.session_id,),
+                readable_partition_ids=request_context.readable_partition_ids,
+                writable_partition_ids=request_context.writable_partition_ids,
+            )
         return workspace_service.resolve_memory_scope(chat_id, memory_space_id)
 
     @staticmethod
@@ -212,8 +223,21 @@ class MemoryService:
 
     @classmethod
     def _filter_hits_for_scope(cls, hits: List[MemoryHit], scope: MemoryScope, limit: int) -> List[MemoryHit]:
-        allowed = set(scope.readable_space_ids)
-        return [hit for hit in hits if cls._memory_space_from_hit(hit) in allowed][:limit]
+        allowed_spaces = set(scope.readable_space_ids)
+        allowed_partitions = set(scope.readable_partition_ids)
+        visible = []
+        for hit in hits:
+            partition_id = str(hit.metadata.get("partition_id", "") or "").strip()
+            if partition_id and allowed_partitions and partition_id not in allowed_partitions:
+                logger.warning("丢弃超出当前请求分区范围的记忆检索结果")
+                continue
+            if cls._memory_space_from_hit(hit) not in allowed_spaces:
+                logger.warning("丢弃超出当前请求记忆空间范围的检索结果")
+                continue
+            visible.append(hit)
+            if len(visible) >= limit:
+                break
+        return visible
 
     async def search(
         self,
@@ -237,7 +261,7 @@ class MemoryService:
             return MemorySearchResult()
         try:
             scope = self._resolve_scope(chat_id, memory_space_id)
-            backend_limit = max(max(1, int(limit)) * 10, 50)
+            backend_limit = max(1, int(limit))
             payload = await self._invoke(
                 "search_memory",
                 {
@@ -254,7 +278,7 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                     "allowed_memory_space_ids": list(scope.readable_space_ids),
                     "allowed_partition_ids": list(scope.readable_partition_ids),
-                    "security_domain": "normal",
+                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
                 },
             )
             result = self._coerce_search_result(payload)
@@ -327,7 +351,7 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                     "memory_space_id": scope.primary_space_id,
                     "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
-                    "security_domain": "normal",
+                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
                     "source_session_id": chat_id,
                     "workspace_id": scope.workspace_id,
                 },
@@ -394,7 +418,7 @@ class MemoryService:
                     "group_id": str(group_id or "").strip(),
                     "memory_space_id": scope.primary_space_id,
                     "partition_id": (scope.writable_partition_ids[0] if scope.writable_partition_ids else "shared"),
-                    "security_domain": "normal",
+                    "security_domain": "kami" if scope.primary_space_id == "memory-space-kami" else "normal",
                     "source_session_id": chat_id,
                     "workspace_id": scope.workspace_id,
                 },

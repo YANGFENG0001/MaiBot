@@ -28,6 +28,7 @@ from src.common.database.database_model import (
 )
 from src.common.logger import get_logger
 
+from .access_resolver import access_resolver
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
 from .partition_service import PartitionService
@@ -452,21 +453,24 @@ class WorkspaceService:
             policy_revision = workspace.policy_revision + profile.policy_revision + route_revision
             home_memory_space_id = profile.home_memory_space_id
 
-        readable_space_ids = self.resolve_readable_memory_space_ids(home_memory_space_id)
-        readable_partition_ids: list[str] = []
-        for readable_space_id in readable_space_ids:
-            readable_partition_ids.extend(
-                (
-                    PartitionService(get_db_session).ensure_shared_partition(readable_space_id, "normal").id,
-                    PartitionService(get_db_session).ensure_person_partition(readable_space_id, person_id, "normal").id,
-                    PartitionService(get_db_session).ensure_conversation_partition(readable_space_id, session_id, "normal").id,
-                )
+        # 权限解析只能返回真实存在的分区；为兼容旧数据库，先幂等补齐当前会话的基础分区。
+        candidate_space_ids = self.resolve_readable_memory_space_ids(home_memory_space_id)
+        for candidate_space_id in candidate_space_ids:
+            PartitionService().ensure_shared_partition(candidate_space_id, "normal")
+            PartitionService().ensure_person_partition(candidate_space_id, person_id, "normal")
+            PartitionService().ensure_conversation_partition(candidate_space_id, session_id, "normal")
+
+        with get_db_session() as session:
+            decision = access_resolver.resolve(
+                session,
+                person_id=person_id,
+                session_id=session_id,
+                workspace_id=workspace.id,
+                home_space_id=home_memory_space_id,
+                bot_profile_id=profile.id,
+                bot_profile_type=profile.profile_type,
+                audience_type=audience_type,
             )
-        writable_partition_ids = (
-            PartitionService(get_db_session).ensure_shared_partition(home_memory_space_id, "normal").id,
-            PartitionService(get_db_session).ensure_person_partition(home_memory_space_id, person_id, "normal").id,
-            PartitionService(get_db_session).ensure_conversation_partition(home_memory_space_id, session_id, "normal").id,
-        )
         return BotRequestContext(
             trace_id=uuid4().hex,
             session_id=session_id,
@@ -474,13 +478,13 @@ class WorkspaceService:
             person_id=person_id,
             active_bot_profile_id=profile.id,
             active_bot_profile_type=profile.profile_type,
-            permission_group_id="",
-            access_mode="normal",
-            security_domain="normal",
+            permission_group_id=decision.permission_group_id,
+            access_mode=decision.access_mode,
+            security_domain=decision.security_domain,
             home_memory_space_id=home_memory_space_id,
-            readable_space_ids=readable_space_ids,
-            readable_partition_ids=tuple(dict.fromkeys(readable_partition_ids)),
-            writable_partition_ids=writable_partition_ids,
+            readable_space_ids=decision.readable_space_ids,
+            readable_partition_ids=decision.readable_partition_ids,
+            writable_partition_ids=decision.writable_partition_ids,
             audience_type=audience_type,
             policy_revision=policy_revision,
         )

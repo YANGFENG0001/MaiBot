@@ -593,6 +593,7 @@ class MemorySpace(SQLModel, table=True):
     name: str = Field(unique=True, index=True, max_length=100)
     description: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
     space_type: str = Field(default="private", index=True, max_length=32)
+    strict_isolation: bool = Field(default=False, index=True)
     enabled: bool = Field(default=True, index=True)
     policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
     created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
@@ -841,6 +842,107 @@ class MemorySpaceACL(SQLModel, table=True):
     filters_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
     created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
     updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemoryPermissionGroup(SQLModel, table=True):
+    """按用户/场景组织的记忆访问策略组。"""
+
+    __tablename__ = "memory_permission_groups"  # type: ignore
+
+    id: str = Field(primary_key=True, max_length=64)
+    name: str = Field(unique=True, index=True, max_length=100)
+    description: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    enabled: bool = Field(default=True, index=True)
+    priority: int = Field(default=0, index=True)
+    memory_scope_mode: str = Field(default="inherit", max_length=16)
+    is_manager_mode: bool = Field(default=False)
+    policy_revision: int = Field(default=1, sa_column=Column(Integer, nullable=False, server_default="1"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemoryPermissionGroupMember(SQLModel, table=True):
+    __tablename__ = "memory_permission_group_members"  # type: ignore
+    __table_args__ = (UniqueConstraint("permission_group_id", "person_id", name="uq_memory_permission_group_member"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    person_id: str = Field(index=True, max_length=255)
+
+
+class MemoryPermissionGroupContext(SQLModel, table=True):
+    __tablename__ = "memory_permission_group_contexts"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    scope_type: str = Field(default="global", index=True, max_length=16)
+    workspace_id: Optional[str] = Field(default=None, foreign_key="workspaces.id", index=True, max_length=64)
+    session_id: Optional[str] = Field(default=None, index=True, max_length=255)
+    channel_type: Optional[str] = Field(default=None, index=True, max_length=16)
+    allow_group_disclosure: bool = Field(default=False)
+    enabled: bool = Field(default=True, index=True)
+
+
+class MemoryPermissionGroupCapability(SQLModel, table=True):
+    __tablename__ = "memory_permission_group_capabilities"  # type: ignore
+    __table_args__ = (UniqueConstraint("permission_group_id", "capability", name="uq_memory_permission_group_capability"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    capability: str = Field(index=True, max_length=100)
+    enabled: bool = Field(default=True, index=True)
+
+
+class MemoryPermissionRule(SQLModel, table=True):
+    __tablename__ = "memory_permission_rules"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    effect: str = Field(default="allow", index=True, max_length=8)
+    space_selector: str = Field(default="current", index=True, max_length=16)
+    memory_space_id: Optional[str] = Field(default=None, foreign_key="memory_spaces.id", index=True, max_length=64)
+    partition_type: str = Field(default="any", index=True, max_length=20)
+    partition_selector: str = Field(default="any", index=True, max_length=16)
+    partition_key: Optional[str] = Field(default=None, index=True, max_length=255)
+    memory_types_json: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="[]"))
+    tags_json: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="[]"))
+    sensitivity_max: Optional[int] = Field(default=None)
+    time_start: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
+    time_end: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, nullable=True))
+    priority: int = Field(default=0, index=True)
+    enabled: bool = Field(default=True, index=True)
+
+
+class PermissionGroupBotRule(SQLModel, table=True):
+    __tablename__ = "permission_group_bot_rules"  # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    permission_group_id: str = Field(foreign_key="memory_permission_groups.id", index=True, max_length=64)
+    effect: str = Field(default="allow", index=True, max_length=8)
+    bot_selector: str = Field(default="current_group", index=True, max_length=20)
+    bot_profile_id: Optional[str] = Field(default=None, foreign_key="bot_profiles.id", index=True, max_length=64)
+
+
+class BotProfileMemoryRule(SQLModel, table=True):
+    __tablename__ = "bot_profile_memory_rules"  # type: ignore
+    __table_args__ = (UniqueConstraint("bot_profile_id", "target_space_id", name="uq_bot_profile_memory_rule"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    target_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    can_read: bool = Field(default=True, index=True)
+    filters_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+
+
+class MemorySpaceBotRule(SQLModel, table=True):
+    __tablename__ = "memory_space_bot_rules"  # type: ignore
+    __table_args__ = (UniqueConstraint("memory_space_id", "bot_profile_id", name="uq_memory_space_bot_rule"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    memory_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    bot_profile_id: str = Field(foreign_key="bot_profiles.id", index=True, max_length=64)
+    can_read: bool = Field(default=True, index=True)
+    filters_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
 
 
 class MemoryTransferJob(SQLModel, table=True):
