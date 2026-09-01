@@ -48,6 +48,7 @@ from src.plugin_runtime.dependency_pipeline import PluginDependencyPipeline
 from src.plugin_runtime.hook_catalog import register_builtin_hook_specs
 from src.plugin_runtime.host.hook_dispatcher import HookDispatchResult, HookDispatcher
 from src.plugin_runtime.host.hook_spec_registry import HookSpec, HookSpecRegistry
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 from src.plugin_runtime.protocol.envelope import InspectPluginConfigResultPayload
 from src.plugin_runtime.runner.manifest_validator import ManifestValidator, is_reserved_plugin_directory
 
@@ -1308,12 +1309,14 @@ class PluginRuntimeManager(
             plugin_message_utils = PluginMessageUtils
             current_message = plugin_message_utils._build_session_message_from_dict(dict(message_dict))
 
+        request_scope = plugin_scope_resolver.resolve_scope()
         for sv in self.supervisors:
             try:
                 cont, mod = await sv.dispatch_event(
                     event_type=new_event_type,
                     message=current_message,
                     extra_args=extra_args,
+                    request_scope=request_scope,
                 )
                 if mod is not None:
                     if plugin_message_utils is None:
@@ -1340,29 +1343,36 @@ class PluginRuntimeManager(
             HookDispatchResult: 聚合后的 Hook 调用结果。
         """
 
-        return await self._hook_dispatcher.invoke_hook(hook_name, **kwargs)
+        request_scope = plugin_scope_resolver.resolve_scope()
+        return await self._hook_dispatcher.invoke_hook(
+            hook_name, request_scope=request_scope, **kwargs
+        )
 
     # ─── 命令查找 ──────────────────────────────────────────────
 
     def find_command_by_text(self, text: str) -> Optional[Dict[str, Any]]:
-        """在所有 Supervisor 的 ComponentRegistry 中查找命令"""
+        """使用统一请求作用域查询插件命令；无上下文时仅用于管理展示。"""
+
         if not self._started:
             return None
+        from src.plugin_runtime.component_query import component_query_service
 
-        for sv in self.supervisors:
-            match_result = sv.component_registry.find_command_by_text(text)
-            if match_result is not None:
-                comp, matched_groups = match_result
-                return {
-                    "name": comp.name,
-                    "full_name": comp.full_name,
-                    "component_type": comp.component_type,
-                    "plugin_id": comp.plugin_id,
-                    "metadata": comp.metadata,
-                    "enabled": comp.enabled,
-                    "matched_groups": matched_groups,
-                }
-        return None
+        match_result = component_query_service.find_command_by_text(text)
+        if match_result is None:
+            return None
+        _executor, matched_groups, command_info = match_result
+        return {
+            "name": command_info.name,
+            "full_name": f"{command_info.plugin_name}.{command_info.name}",
+            "component_type": "COMMAND",
+            "plugin_id": command_info.plugin_name,
+            "metadata": {
+                "description": command_info.description,
+                "permission": command_info.permission,
+            },
+            "enabled": command_info.enabled,
+            "matched_groups": matched_groups,
+        }
 
     async def invoke_plugin(
         self,

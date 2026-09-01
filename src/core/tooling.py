@@ -185,6 +185,14 @@ class ToolExecutionContext:
     workspace_id: str = ""
     memory_space_id: str = ""
     workspace_policy_revision: int = 0
+    bot_profile_id: str = ""
+    bot_profile_type: str = ""
+    permission_group_id: str = ""
+    access_mode: str = ""
+    security_domain: str = ""
+    policy_revision: int = 0
+    audience_type: str = ""
+    trace_id: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -201,6 +209,14 @@ class ToolAvailabilityContext:
     workspace_id: str = ""
     memory_space_id: str = ""
     workspace_policy_revision: int = 0
+    bot_profile_id: str = ""
+    bot_profile_type: str = ""
+    permission_group_id: str = ""
+    access_mode: str = ""
+    security_domain: str = ""
+    policy_revision: int = 0
+    audience_type: str = ""
+    trace_id: str = ""
     inherit_global_tools: bool = True
     allowed_tools: frozenset[str] = field(default_factory=frozenset)
     denied_tools: frozenset[str] = field(default_factory=frozenset)
@@ -328,6 +344,14 @@ class ToolRegistry:
             workspace_id=request_context.workspace_id,
             memory_space_id=request_context.home_memory_space_id,
             workspace_policy_revision=request_context.policy_revision,
+            bot_profile_id=request_context.active_bot_profile_id,
+            bot_profile_type=request_context.active_bot_profile_type,
+            permission_group_id=request_context.permission_group_id,
+            access_mode=request_context.access_mode,
+            security_domain=request_context.security_domain,
+            policy_revision=request_context.policy_revision,
+            audience_type=request_context.audience_type,
+            trace_id=request_context.trace_id,
             inherit_global_tools=workspace_context.inherit_global_tools,
             allowed_tools=workspace_context.allowed_tools,
             denied_tools=workspace_context.denied_tools,
@@ -352,6 +376,10 @@ class ToolRegistry:
             for spec in provider_specs:
                 if not spec.enabled:
                     continue
+                component_name = str(spec.metadata.get("component_full_name") or f"{spec.provider_name}.{spec.name}")
+                if context is not None and context.workspace_id:
+                    if not context.is_tool_allowed(spec.name, component_name):
+                        continue
                 if spec.name in seen_names:
                     logger.warning(
                         f"检测到重复工具名 {spec.name}，保留先注册的工具，跳过 provider={provider.provider_name}"
@@ -359,12 +387,6 @@ class ToolRegistry:
                     continue
                 seen_names.add(spec.name)
                 collected_specs.append(spec)
-        if context is not None and context.workspace_id:
-            return [
-                spec
-                for spec in collected_specs
-                if context.is_tool_allowed(spec.name, f"{spec.provider_name}.{spec.name}")
-            ]
         return collected_specs
 
     async def get_tool_spec(
@@ -441,27 +463,34 @@ class ToolRegistry:
                 workspace_id=context.workspace_id,
                 memory_space_id=context.memory_space_id,
                 workspace_policy_revision=context.workspace_policy_revision,
+                bot_profile_id=context.bot_profile_id,
+                bot_profile_type=context.bot_profile_type,
+                permission_group_id=context.permission_group_id,
+                access_mode=context.access_mode,
+                security_domain=context.security_domain,
+                policy_revision=context.policy_revision,
+                audience_type=context.audience_type,
+                trace_id=context.trace_id,
                 inherit_global_tools=bool(context.metadata.get("inherit_global_tools", True)),
                 allowed_tools=frozenset(context.metadata.get("allowed_tools", ())),
                 denied_tools=frozenset(context.metadata.get("denied_tools", ())),
             )
 
         availability_context = self._apply_current_request_policy(availability_context)
+        denied_component_name = ""
         for provider in self._providers:
             provider_specs = await provider.list_tools(availability_context)
-            matching_spec = next(
-                (spec for spec in provider_specs if spec.name == invocation.tool_name and spec.enabled),
-                None,
-            )
-            if matching_spec is not None:
+            for matching_spec in provider_specs:
+                if matching_spec.name != invocation.tool_name or not matching_spec.enabled:
+                    continue
+                component_name = str(
+                    matching_spec.metadata.get("component_full_name")
+                    or f"{matching_spec.provider_name}.{matching_spec.name}"
+                )
                 if availability_context is not None and availability_context.workspace_id:
-                    component_name = f"{matching_spec.provider_name}.{matching_spec.name}"
                     if not availability_context.is_tool_allowed(matching_spec.name, component_name):
-                        return ToolExecutionResult(
-                            tool_name=invocation.tool_name,
-                            success=False,
-                            error_message=f"当前 BotProfile 不允许使用工具：{component_name}",
-                        )
+                        denied_component_name = denied_component_name or component_name
+                        continue
                 try:
                     return await provider.invoke(invocation, context)
                 except Exception as exc:
@@ -479,6 +508,12 @@ class ToolRegistry:
                         error_message=error_message,
                     )
 
+        if denied_component_name:
+            return ToolExecutionResult(
+                tool_name=invocation.tool_name,
+                success=False,
+                error_message=f"当前 BotProfile 不允许使用工具：{denied_component_name}",
+            )
         return ToolExecutionResult(
             tool_name=invocation.tool_name,
             success=False,

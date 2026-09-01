@@ -51,7 +51,7 @@ class _FakeManager:
 
 
 @pytest.mark.asyncio
-async def test_service_reuses_unchanged_manager_and_preserves_context(
+async def test_rg05_service_reuses_unchanged_manager_and_preserves_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """相同配置只建一次连接，工具结果仍携带当前聊天上下文。"""
@@ -87,7 +87,21 @@ async def test_service_reuses_unchanged_manager_and_preserves_context(
     tools = await service.list_tools()
     result = await service.call_tool_invocation(
         ToolInvocation(tool_name="local_tool"),
-        ToolExecutionContext(session_id="session-1", stream_id="stream-1"),
+        ToolExecutionContext(
+            session_id="session-1",
+            stream_id="stream-1",
+            workspace_id="workspace-1",
+            memory_space_id="space-1",
+            workspace_policy_revision=2,
+            bot_profile_id="profile-1",
+            bot_profile_type="group",
+            permission_group_id="permission-1",
+            access_mode="normal",
+            security_domain="normal",
+            policy_revision=3,
+            audience_type="private",
+            trace_id="trace-1",
+        ),
     )
 
     assert len(created_managers) == 1

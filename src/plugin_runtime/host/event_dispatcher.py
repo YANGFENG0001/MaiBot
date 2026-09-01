@@ -15,6 +15,8 @@ import asyncio
 from src.common.logger import get_logger
 from src.common.shutdown import is_shutdown_requested
 from src.plugin_runtime.protocol.errors import ErrorCode, RPCError
+from src.plugin_runtime.request_scope import PluginRequestScope
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 
 from .circuit_breaker import get_plugin_circuit_breaker
 
@@ -85,6 +87,7 @@ class EventDispatcher:
         supervisor: "PluginRunnerSupervisor",
         message: Optional["SessionMessage"] = None,
         extra_args: Optional[Dict[str, Any]] = None,
+        request_scope: Optional[PluginRequestScope] = None,
     ) -> Tuple[bool, Optional["SessionMessage"]]:
         """分发事件到所有对应 handler 的便捷方法。
 
@@ -103,7 +106,21 @@ class EventDispatcher:
         if is_shutdown_requested():
             return True, None
 
-        handler_entries = self._component_registry.get_event_handlers(event_type)
+        trusted_scope = request_scope if request_scope is not None else plugin_scope_resolver.resolve_scope()
+        handler_entries = []
+        for entry in self._component_registry.get_event_handlers(event_type):
+            registration = supervisor._registered_plugins.get(entry.plugin_id)
+            config_schema = dict(registration.config_schema) if registration is not None else {}
+            decision = plugin_scope_resolver.is_component_allowed(
+                entry.plugin_id,
+                entry.full_name,
+                "EVENT_HANDLER",
+                trusted_scope,
+                globally_enabled=bool(entry.enabled),
+                config_schema=config_schema,
+            )
+            if decision.allowed:
+                handler_entries.append(entry)
         if not handler_entries:
             return True, None
 
@@ -133,7 +150,9 @@ class EventDispatcher:
                 "message": modified_message,
                 **(extra_args or {}),
             }
-            result = await self._invoke_handler(supervisor, entry, args, event_type)
+            result = await self._invoke_handler(
+                supervisor, entry, args, event_type, trusted_scope
+            )
             if result and not result.continue_processing:
                 should_continue = False
                 break
@@ -153,7 +172,9 @@ class EventDispatcher:
                     **(extra_args or {}),
                 }
                 # 非阻塞：保持实例级强引用，防止 task 被 GC 回收
-                task = asyncio.create_task(self._invoke_handler(supervisor, entry, args, event_type))
+                task = asyncio.create_task(
+                    self._invoke_handler(supervisor, entry, args, event_type, trusted_scope)
+                )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
         try:
@@ -176,6 +197,7 @@ class EventDispatcher:
         handler_entry: "EventHandlerEntry",
         args: Dict[str, Any],
         event_type: str,
+        request_scope: Optional[PluginRequestScope],
     ) -> Optional[EventResult]:
         """调用单个 handler 并收集结果。"""
         if is_shutdown_requested():
@@ -191,7 +213,11 @@ class EventDispatcher:
 
         try:
             resp_envelope = await supervisor.invoke_plugin(
-                "plugin.emit_event", handler_entry.plugin_id, handler_entry.name, args
+                "plugin.emit_event",
+                handler_entry.plugin_id,
+                handler_entry.name,
+                args,
+                request_scope=request_scope,
             )
             get_plugin_circuit_breaker().record_success(circuit_permit)
             resp = resp_envelope.payload
@@ -199,7 +225,7 @@ class EventDispatcher:
                 handler_name=handler_entry.full_name,
                 success=resp.get("success", True),
                 continue_processing=resp.get("continue_processing", True),
-                modified_message=resp.get("modified_message"),
+                modified_message=self._sanitize_modified_message(resp.get("modified_message")),
                 custom_result=resp.get("custom_result"),
             )
         except RPCError as e:
@@ -213,13 +239,35 @@ class EventDispatcher:
 
         if event_type in self._history_enabled:
             history_list = self._result_history.setdefault(event_type, [])
-            history_list.append(result)
+            history_list.append(
+                EventResult(
+                    handler_name=result.handler_name,
+                    success=result.success,
+                    continue_processing=result.continue_processing,
+                )
+            )
+            # 历史只保留状态，不复制消息正文、插件自定义结果或请求级配置。
             # 自动清理超出限制的旧记录，防止内存无限增长
             if len(history_list) > _MAX_HISTORY_LENGTH:
                 # 保留最新的 _MAX_HISTORY_LENGTH 条记录
                 self._result_history[event_type] = history_list[-_MAX_HISTORY_LENGTH:]
 
         return result
+
+    @staticmethod
+    def _sanitize_modified_message(value: Any) -> Optional["MessageDict"]:
+        if not isinstance(value, dict):
+            return None
+        sanitized = dict(value)
+        for reserved_key in (
+            "bot_profile_id",
+            "security_domain",
+            "memory_space_id",
+            "request_scope",
+            "invocation_token",
+        ):
+            sanitized.pop(reserved_key, None)
+        return sanitized  # type: ignore[return-value]
 
     @staticmethod
     def _should_record_circuit_failure(exc: RPCError) -> bool:

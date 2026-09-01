@@ -37,6 +37,8 @@ from src.plugin_runtime import (
     detect_host_application_version,
 )
 from src.plugin_runtime.local_sdk import build_pythonpath_with_local_sdk
+from src.plugin_runtime.request_scope import PluginRequestScope
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 from src.plugin_runtime.protocol.envelope import (
     BootstrapPluginPayload,
     ConfigReloadScope,
@@ -45,6 +47,7 @@ from src.plugin_runtime.protocol.envelope import (
     HealthPayload,
     InspectPluginConfigPayload,
     InspectPluginConfigResultPayload,
+    InvokePayload,
     LLMProviderInvokePayload,
     MessageGatewayStateUpdatePayload,
     MessageGatewayStateUpdateResultPayload,
@@ -79,6 +82,7 @@ from .component_registry import ComponentRegistry
 from .event_dispatcher import EventDispatcher
 from .hook_dispatcher import HookDispatchResult, HookDispatcher
 from .hook_spec_registry import HookSpecRegistry
+from .invocation_scope_registry import InvocationScopeRegistry
 from .logger_bridge import RunnerLogBridge
 from .message_gateway import MessageGateway
 from .rpc_server import RPCServer
@@ -155,9 +159,10 @@ class PluginRunnerSupervisor:
 
         self._transport = create_transport_server(socket_path=socket_path)
         self._authorization = AuthorizationManager()
-        self._capability_service = CapabilityService(self._authorization)
         self._api_registry = APIRegistry()
         self._component_registry = ComponentRegistry(hook_spec_registry=hook_spec_registry)
+        self._invocation_scopes = InvocationScopeRegistry(f"{self._group_name}:{id(self)}")
+        self._capability_service = CapabilityService(self._authorization, self._invocation_scopes)
         self._event_dispatcher = EventDispatcher(self._component_registry)
         self._hook_dispatcher = HookDispatcher(
             lambda: [self],
@@ -437,6 +442,7 @@ class PluginRunnerSupervisor:
         event_type: str,
         message: Optional["SessionMessage"] = None,
         extra_args: Optional[Dict[str, Any]] = None,
+        request_scope: Optional[PluginRequestScope] = None,
     ) -> Tuple[bool, Optional["SessionMessage"]]:
         """分发事件到已注册的事件处理器。
 
@@ -448,9 +454,17 @@ class PluginRunnerSupervisor:
         Returns:
             Tuple[bool, Optional[SessionMessage]]: 是否继续处理，以及插件可能修改后的消息。
         """
-        return await self._event_dispatcher.dispatch_event(event_type, self, message, extra_args)
+        return await self._event_dispatcher.dispatch_event(
+            event_type, self, message, extra_args, request_scope=request_scope
+        )
 
-    async def invoke_hook(self, hook_name: str, **kwargs: Any) -> HookDispatchResult:
+    async def invoke_hook(
+        self,
+        hook_name: str,
+        *,
+        request_scope: Optional[PluginRequestScope] = None,
+        **kwargs: Any,
+    ) -> HookDispatchResult:
         """在当前 Supervisor 内触发一次命名 Hook 调用。
 
         Args:
@@ -461,7 +475,9 @@ class PluginRunnerSupervisor:
             HookDispatchResult: 聚合后的 Hook 调用结果。
         """
 
-        return await self._hook_dispatcher.invoke_hook(hook_name, **kwargs)
+        return await self._hook_dispatcher.invoke_hook(
+            hook_name, request_scope=request_scope, **kwargs
+        )
 
     async def send_message_to_external(
         self,
@@ -571,8 +587,93 @@ class PluginRunnerSupervisor:
         await self._shutdown_runner(reason="host_stop")
         await self._rpc_server.stop()
         self._clear_runner_state()
+        self._invocation_scopes.clear()
 
         self._logger.info("已停止")
+
+    def _get_plugin_config_snapshot(self, plugin_id: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        registration = self._registered_plugins.get(plugin_id)
+        if registration is None:
+            raise PermissionError(f"插件未注册或已全局禁用: {plugin_id}")
+        return dict(registration.normalized_config), dict(registration.config_schema)
+
+    def _authorize_plugin_invocation(
+        self,
+        *,
+        plugin_id: str,
+        component_name: str,
+        request_scope: Optional[PluginRequestScope],
+    ) -> tuple[str, str, Dict[str, Any]]:
+        """在 RPC 边界再次执行全局与 BotProfile 策略，并构造独立配置。"""
+
+        base_config, config_schema = self._get_plugin_config_snapshot(plugin_id)
+        entry = self._component_registry.get_component(f"{plugin_id}.{component_name}")
+        component_full_name = entry.full_name if entry is not None else f"{plugin_id}.{component_name}"
+        component_type = str(entry.component_type.value if entry is not None else "PLUGIN")
+        globally_enabled = bool(entry.enabled) if entry is not None else True
+        decision = plugin_scope_resolver.is_component_allowed(
+            plugin_id,
+            component_full_name,
+            component_type,
+            request_scope,
+            globally_enabled=globally_enabled,
+            config_schema=config_schema,
+        )
+        if not decision.allowed:
+            raise PermissionError(
+                f"当前 BotProfile 不允许调用插件组件: {component_full_name} ({decision.reason_code})"
+            )
+        effective_config = plugin_scope_resolver.resolve_effective_plugin_config(
+            plugin_id,
+            request_scope,
+            base_config,
+            config_schema,
+        )
+        return component_full_name, component_type, effective_config
+
+    async def _invoke_plugin_with_trusted_scope(
+        self,
+        *,
+        method: str,
+        plugin_id: str,
+        component_name: str,
+        args: Optional[Dict[str, Any]],
+        timeout_ms: int,
+        trusted_scope: Optional[PluginRequestScope],
+    ) -> Envelope:
+        """使用调用方已经确定的可信作用域执行一次 Runner RPC。"""
+
+        self._ensure_accepting_runner_rpc()
+        component_full_name, component_type, effective_config = self._authorize_plugin_invocation(
+            plugin_id=plugin_id,
+            component_name=component_name,
+            request_scope=trusted_scope,
+        )
+        invocation_token = ""
+        if trusted_scope is not None:
+            invocation_token = self._invocation_scopes.issue(
+                plugin_id=plugin_id,
+                component_full_name=component_full_name,
+                component_type=component_type,
+                scope=trusted_scope,
+            )
+        payload = InvokePayload(
+            component_name=component_name,
+            args=dict(args or {}),
+            request_scope=trusted_scope.to_payload() if trusted_scope is not None else {},
+            effective_plugin_config=effective_config,
+            invocation_token=invocation_token,
+        )
+        try:
+            return await self._rpc_server.send_request(
+                method,
+                plugin_id,
+                payload.model_dump(),
+                timeout_ms,
+            )
+        finally:
+            if invocation_token:
+                self._invocation_scopes.revoke(invocation_token)
 
     async def invoke_plugin(
         self,
@@ -581,8 +682,9 @@ class PluginRunnerSupervisor:
         component_name: str,
         args: Optional[Dict[str, Any]] = None,
         timeout_ms: int = 30000,
+        request_scope: Optional[PluginRequestScope] = None,
     ) -> Envelope:
-        """调用 Runner 内的插件组件。
+        """调用 Runner 内的请求级插件组件。
 
         Args:
             method: RPC 方法名。
@@ -590,16 +692,20 @@ class PluginRunnerSupervisor:
             component_name: 组件名。
             args: 调用参数。
             timeout_ms: RPC 超时时间，单位毫秒。
+            request_scope: Host 已捕获的可信请求作用域；留空时读取当前绑定上下文。
 
         Returns:
             Envelope: RPC 响应信封。
         """
-        self._ensure_accepting_runner_rpc()
-        return await self._rpc_server.send_request(
-            method,
-            plugin_id,
-            {"component_name": component_name, "args": args or {}},
-            timeout_ms,
+
+        trusted_scope = request_scope if request_scope is not None else plugin_scope_resolver.resolve_scope()
+        return await self._invoke_plugin_with_trusted_scope(
+            method=method,
+            plugin_id=plugin_id,
+            component_name=component_name,
+            args=args,
+            timeout_ms=timeout_ms,
+            trusted_scope=trusted_scope,
         )
 
     async def invoke_message_gateway(
@@ -621,12 +727,16 @@ class PluginRunnerSupervisor:
             Envelope: Runner 返回的响应信封。
         """
 
-        return await self.invoke_plugin(
+        # MessageGateway 是进程级平台连接基础设施，不随 BotProfile 切换。
+        # 即使当前正在处理某个请求，也必须按全局插件配置执行，避免因请求级
+        # 插件 deny/override 导致适配器断联、重启或切换账号。
+        return await self._invoke_plugin_with_trusted_scope(
             method="plugin.invoke_message_gateway",
             plugin_id=plugin_id,
             component_name=component_name,
             args=args,
             timeout_ms=timeout_ms,
+            trusted_scope=None,
         )
 
     async def invoke_llm_provider(
@@ -861,7 +971,15 @@ class PluginRunnerSupervisor:
             self._logger.warning(f"插件 {plugin_id} 配置更新通知失败: {exc}")
             return False
 
-        return bool(response.payload.get("acknowledged", False))
+        acknowledged = bool(response.payload.get("acknowledged", False))
+        if acknowledged and normalized_scope == ConfigReloadScope.SELF:
+            normalized_config = response.payload.get("normalized_config")
+            registration = self._registered_plugins.get(plugin_id)
+            if registration is not None and isinstance(normalized_config, dict):
+                self._registered_plugins[plugin_id] = registration.model_copy(
+                    update={"normalized_config": dict(normalized_config)}
+                )
+        return acknowledged
 
     async def validate_plugin_config(self, plugin_id: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """请求 Runner 使用插件自身配置模型校验配置。

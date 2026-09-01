@@ -70,6 +70,14 @@ from src.plugin_runtime.protocol.envelope import (
     ValidatePluginConfigResultPayload,
 )
 from src.plugin_runtime.protocol.errors import ErrorCode
+from src.plugin_runtime.request_scope import PluginRequestScope
+from src.plugin_runtime.runner.invocation_context import (
+    PluginInvocationContext,
+    bind_invocation_context,
+    get_current_effective_plugin_config,
+    get_current_invocation_token,
+    get_current_request_scope,
+)
 from src.plugin_runtime.runner.log_handler import RunnerIPCLogHandler
 from src.plugin_runtime.runner.plugin_paths import PluginPaths, build_plugin_paths
 from src.plugin_runtime.runner.plugin_loader import PluginCandidate, PluginLoader, PluginMeta
@@ -726,6 +734,8 @@ class PluginRunner:
                     f"插件 {bound_plugin_id} 不允许直接调用 Host 原始 RPC 方法: {normalized_method or '<empty>'}"
                 )
             request_payload = dict(payload or {})
+            if normalized_method == "cap.call":
+                request_payload["invocation_token"] = get_current_invocation_token()
             if timeout_ms is None and normalized_method == "cap.call":
                 capability_name = str(request_payload.get("capability") or "").strip()
                 cap_args = request_payload.get("args")
@@ -768,6 +778,7 @@ class PluginRunner:
         )
         self._warn_legacy_plugin_data_dir(plugin_id, plugin_dir, plugin_paths.data_dir)
         self._ensure_context_llm_helpers(ctx)
+        self._ensure_context_request_helpers(ctx)
         cast(_ContextAwarePlugin, instance)._set_context(ctx)
         logger.debug(f"已为插件 {plugin_id} 注入 PluginContext")
 
@@ -865,6 +876,50 @@ class PluginRunner:
             return await ctx.call_capability("llm.transcribe_audio", **payload)
 
         llm_proxy.transcribe_audio = _transcribe_audio
+
+    @staticmethod
+    def _ensure_context_request_helpers(ctx: Any) -> None:
+        """在不修改外部 SDK 的前提下提供当前调用只读快照。"""
+
+        ctx.get_request_scope = get_current_request_scope
+        ctx.get_effective_plugin_config = get_current_effective_plugin_config
+
+    @staticmethod
+    def _build_invocation_context(plugin_id: str, invoke: InvokePayload) -> PluginInvocationContext:
+        if invoke.invocation_token and not invoke.request_scope:
+            raise ValueError("带 invocation_token 的插件调用缺少 request_scope")
+        if invoke.request_scope and not invoke.invocation_token:
+            raise ValueError("带 request_scope 的插件调用缺少 invocation_token")
+        request_scope = PluginRequestScope.from_payload(invoke.request_scope) if invoke.request_scope else None
+        return PluginInvocationContext(
+            plugin_id=plugin_id,
+            component_full_name=f"{plugin_id}.{invoke.component_name}",
+            request_scope=request_scope,
+            effective_plugin_config=_deep_copy_plugin_config_mapping(invoke.effective_plugin_config),
+            invocation_token=invoke.invocation_token,
+        )
+
+    @staticmethod
+    def _build_handler_kwargs(
+        handler_method: Callable[..., Any],
+        invoke: InvokePayload,
+        invocation_context: PluginInvocationContext,
+    ) -> Dict[str, Any]:
+        """仅按 handler 签名注入请求配置和上下文，兼容旧插件。"""
+
+        kwargs = dict(invoke.args)
+        signature = inspect.signature(handler_method)
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if accepts_kwargs or "effective_plugin_config" in signature.parameters:
+            kwargs["effective_plugin_config"] = _deep_copy_plugin_config_mapping(
+                invocation_context.effective_plugin_config
+            )
+        if accepts_kwargs or "request_context" in signature.parameters:
+            kwargs["request_context"] = invocation_context.request_scope
+        return kwargs
 
     def _apply_plugin_config(self, meta: PluginMeta, config_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """在 Runner 侧为插件实例注入当前插件配置。
@@ -1317,7 +1372,7 @@ class PluginRunner:
         """撤销 bootstrap 期间为插件签发的能力令牌。"""
         await self._bootstrap_plugin(meta, capabilities_required=[])
 
-    async def _register_plugin(self, meta: PluginMeta) -> bool:
+    async def _register_plugin(self, meta: PluginMeta, normalized_config: Dict[str, Any]) -> bool:
         """向 Host 注册单个插件。
 
         Args:
@@ -1407,6 +1462,7 @@ class PluginRunner:
             dependencies=meta.dependencies,
             config_reload_subscriptions=config_reload_subscriptions,
             default_config=self._get_plugin_default_config(instance),
+            normalized_config=_deep_copy_plugin_config_mapping(normalized_config),
             config_schema=self._get_plugin_config_schema(meta),
         )
 
@@ -1557,7 +1613,7 @@ class PluginRunner:
             self._loader.purge_plugin_modules(meta.plugin_id, meta.plugin_dir)
             return PluginActivationStatus.FAILED
 
-        if not await self._register_plugin(meta):
+        if not await self._register_plugin(meta, plugin_config):
             await self._invoke_plugin_on_unload(meta)
             await self._deactivate_plugin(meta)
             self._loader.purge_plugin_modules(meta.plugin_id, meta.plugin_dir)
@@ -2000,11 +2056,11 @@ class PluginRunner:
         )
 
     async def _handle_invoke(self, envelope: Envelope) -> Envelope:
-        """处理组件调用请求"""
+        """处理 Tool、Action、Command 与 API 组件调用。"""
         try:
             invoke = InvokePayload.model_validate(envelope.payload)
-        except Exception as e:
-            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(e))
+        except Exception as exc:
+            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         plugin_id = envelope.plugin_id
         meta = self._loader.get_plugin(plugin_id)
@@ -2013,26 +2069,34 @@ class PluginRunner:
                 ErrorCode.E_PLUGIN_NOT_FOUND.value,
                 f"插件 {plugin_id} 未加载",
             )
+        try:
+            invocation_context = self._build_invocation_context(plugin_id, invoke)
+        except ValueError as exc:
+            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         component_name = invoke.component_name
         handler_method = self._resolve_component_handler(meta, component_name)
         inflight = self._start_inflight_rpc(envelope, component_name)
-
         try:
-            # 回退: 旧版 LegacyPluginAdapter 通过 invoke_component 统一桥接
             if (handler_method is None or not callable(handler_method)) and hasattr(meta.instance, "invoke_component"):
                 try:
-                    result = await self._invoke_plugin_callable(
-                        meta.instance.invoke_component,
-                        component_name,
-                        **invoke.args,
+                    with bind_invocation_context(invocation_context):
+                        result = await self._invoke_plugin_callable(
+                            meta.instance.invoke_component,
+                            component_name,
+                            **invoke.args,
+                        )
+                    return envelope.make_response(
+                        payload=InvokeResultPayload(success=True, result=result).model_dump()
                     )
-                    resp_payload = InvokeResultPayload(success=True, result=result)
-                    return envelope.make_response(payload=resp_payload.model_dump())
-                except Exception as e:
-                    logger.error(f"插件 {plugin_id} 组件 {component_name} (legacy) 执行异常: {e}", exc_info=True)
-                    resp_payload = InvokeResultPayload(success=False, result=str(e))
-                    return envelope.make_response(payload=resp_payload.model_dump())
+                except Exception as exc:
+                    logger.error(
+                        f"插件 {plugin_id} 组件 {component_name} (legacy) 执行异常: {exc}",
+                        exc_info=True,
+                    )
+                    return envelope.make_response(
+                        payload=InvokeResultPayload(success=False, result=str(exc)).model_dump()
+                    )
 
             if handler_method is None or not callable(handler_method):
                 return envelope.make_error_response(
@@ -2041,13 +2105,17 @@ class PluginRunner:
                 )
 
             try:
-                result = await self._invoke_plugin_callable(handler_method, **invoke.args)
-                resp_payload = InvokeResultPayload(success=True, result=result)
-                return envelope.make_response(payload=resp_payload.model_dump())
-            except Exception as e:
-                logger.error(f"插件 {plugin_id} 组件 {component_name} 执行异常: {e}", exc_info=True)
-                resp_payload = InvokeResultPayload(success=False, result=str(e))
-                return envelope.make_response(payload=resp_payload.model_dump())
+                handler_kwargs = self._build_handler_kwargs(handler_method, invoke, invocation_context)
+                with bind_invocation_context(invocation_context):
+                    result = await self._invoke_plugin_callable(handler_method, **handler_kwargs)
+                return envelope.make_response(
+                    payload=InvokeResultPayload(success=True, result=result).model_dump()
+                )
+            except Exception as exc:
+                logger.error(f"插件 {plugin_id} 组件 {component_name} 执行异常: {exc}", exc_info=True)
+                return envelope.make_response(
+                    payload=InvokeResultPayload(success=False, result=str(exc)).model_dump()
+                )
         finally:
             self._finish_inflight_rpc(inflight)
 
@@ -2101,70 +2169,7 @@ class PluginRunner:
             self._finish_inflight_rpc(inflight)
 
     async def _handle_event_invoke(self, envelope: Envelope) -> Envelope:
-        """处理 EventHandler 调用请求
-
-        与通用 invoke 不同，会将返回值规范化为
-        {success, continue_processing, modified_message, custom_result} 格式，
-        使 EventDispatcher 可直接从 payload 顶层读取这些字段。
-        """
-        try:
-            invoke = InvokePayload.model_validate(envelope.payload)
-        except Exception as e:
-            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(e))
-
-        plugin_id = envelope.plugin_id
-        meta = self._loader.get_plugin(plugin_id)
-        if meta is None:
-            return envelope.make_error_response(
-                ErrorCode.E_PLUGIN_NOT_FOUND.value,
-                f"插件 {plugin_id} 未加载",
-            )
-
-        component_name = invoke.component_name
-        handler_method = self._resolve_component_handler(meta, component_name)
-
-        if handler_method is None or not callable(handler_method):
-            return envelope.make_error_response(
-                ErrorCode.E_METHOD_NOT_ALLOWED.value,
-                f"插件 {plugin_id} 无组件: {component_name}",
-            )
-
-        inflight = self._start_inflight_rpc(envelope, component_name)
-        try:
-            raw = await self._invoke_plugin_callable(handler_method, **invoke.args)
-
-            # 规范化返回值：将 EventHandler 返回展平到 payload 顶层
-            if raw is None:
-                result = {"success": True, "continue_processing": True}
-            elif isinstance(raw, dict):
-                result = {
-                    "success": True,
-                    # 兼容 guide.md 中文档的 {"blocked": True} 写法
-                    "continue_processing": not raw.get("blocked", False)
-                    if "blocked" in raw
-                    else raw.get("continue_processing", True),
-                    "modified_message": raw.get("modified_message"),
-                    "custom_result": raw.get("custom_result"),
-                }
-            else:
-                result = {"success": True, "continue_processing": True, "custom_result": raw}
-
-            return envelope.make_response(payload=result)
-        except Exception as e:
-            logger.error(f"插件 {plugin_id} event_handler {component_name} 执行异常: {e}", exc_info=True)
-            return envelope.make_response(payload={"success": False, "continue_processing": True})
-        finally:
-            self._finish_inflight_rpc(inflight)
-
-    async def _handle_hook_invoke(self, envelope: Envelope) -> Envelope:
-        """处理 HookHandler 调用请求。
-
-        Args:
-            envelope: RPC 请求信封。
-
-        Returns:
-            Envelope: 标准化后的 Hook 调用结果。
-        """
+        """在只读请求作用域内执行 EventHandler。"""
         try:
             invoke = InvokePayload.model_validate(envelope.payload)
         except Exception as exc:
@@ -2177,6 +2182,65 @@ class PluginRunner:
                 ErrorCode.E_PLUGIN_NOT_FOUND.value,
                 f"插件 {plugin_id} 未加载",
             )
+        try:
+            invocation_context = self._build_invocation_context(plugin_id, invoke)
+        except ValueError as exc:
+            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
+
+        component_name = invoke.component_name
+        handler_method = self._resolve_component_handler(meta, component_name)
+        if handler_method is None or not callable(handler_method):
+            return envelope.make_error_response(
+                ErrorCode.E_METHOD_NOT_ALLOWED.value,
+                f"插件 {plugin_id} 无组件: {component_name}",
+            )
+
+        inflight = self._start_inflight_rpc(envelope, component_name)
+        try:
+            handler_kwargs = self._build_handler_kwargs(handler_method, invoke, invocation_context)
+            with bind_invocation_context(invocation_context):
+                raw = await self._invoke_plugin_callable(handler_method, **handler_kwargs)
+
+            if raw is None:
+                result = {"success": True, "continue_processing": True}
+            elif isinstance(raw, dict):
+                result = {
+                    "success": True,
+                    "continue_processing": (
+                        not raw.get("blocked", False)
+                        if "blocked" in raw
+                        else raw.get("continue_processing", True)
+                    ),
+                    "modified_message": raw.get("modified_message"),
+                    "custom_result": raw.get("custom_result"),
+                }
+            else:
+                result = {"success": True, "continue_processing": True, "custom_result": raw}
+            return envelope.make_response(payload=result)
+        except Exception as exc:
+            logger.error(f"插件 {plugin_id} event_handler {component_name} 执行异常: {exc}", exc_info=True)
+            return envelope.make_response(payload={"success": False, "continue_processing": True})
+        finally:
+            self._finish_inflight_rpc(inflight)
+
+    async def _handle_hook_invoke(self, envelope: Envelope) -> Envelope:
+        """在只读请求作用域内执行 HookHandler。"""
+        try:
+            invoke = InvokePayload.model_validate(envelope.payload)
+        except Exception as exc:
+            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
+
+        plugin_id = envelope.plugin_id
+        meta = self._loader.get_plugin(plugin_id)
+        if meta is None:
+            return envelope.make_error_response(
+                ErrorCode.E_PLUGIN_NOT_FOUND.value,
+                f"插件 {plugin_id} 未加载",
+            )
+        try:
+            invocation_context = self._build_invocation_context(plugin_id, invoke)
+        except ValueError as exc:
+            return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         component_name = invoke.component_name
         handler_method = self._resolve_component_handler(meta, component_name)
@@ -2189,7 +2253,9 @@ class PluginRunner:
         inflight = self._start_inflight_rpc(envelope, component_name)
         try:
             try:
-                raw = await self._invoke_plugin_callable(handler_method, **invoke.args)
+                handler_kwargs = self._build_handler_kwargs(handler_method, invoke, invocation_context)
+                with bind_invocation_context(invocation_context):
+                    raw = await self._invoke_plugin_callable(handler_method, **handler_kwargs)
             except Exception as exc:
                 logger.error(f"插件 {plugin_id} hook_handler {component_name} 执行异常: {exc}", exc_info=True)
                 return envelope.make_response(
@@ -2211,7 +2277,6 @@ class PluginRunner:
                 }
             else:
                 result = {"success": True, "action": "continue", "custom_result": raw}
-
             return envelope.make_response(payload=result)
         finally:
             self._finish_inflight_rpc(inflight)
@@ -2261,12 +2326,13 @@ class PluginRunner:
             return envelope.make_error_response(ErrorCode.E_BAD_PAYLOAD.value, str(exc))
 
         plugin_id = envelope.plugin_id
+        normalized_config: Dict[str, Any] = {}
         if meta := self._loader.get_plugin(plugin_id):
             inflight = self._start_inflight_rpc(envelope, "on_config_update")
             try:
                 config_scope = payload.config_scope.value
                 if config_scope == "self":
-                    self._apply_plugin_config(meta, config_data=payload.config_data)
+                    normalized_config = self._apply_plugin_config(meta, config_data=payload.config_data)
                 if not hasattr(meta.instance, "on_config_update"):
                     raise AttributeError("插件缺少 on_config_update() 实现")
 
@@ -2281,7 +2347,12 @@ class PluginRunner:
                 return envelope.make_error_response(ErrorCode.E_UNKNOWN.value, str(e))
             finally:
                 self._finish_inflight_rpc(inflight)
-        return envelope.make_response(payload={"acknowledged": True})
+        return envelope.make_response(
+            payload={
+                "acknowledged": True,
+                "normalized_config": _deep_copy_plugin_config_mapping(normalized_config),
+            }
+        )
 
     async def _handle_inspect_plugin_config(self, envelope: Envelope) -> Envelope:
         """处理插件配置元数据解析请求。

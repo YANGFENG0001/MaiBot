@@ -627,6 +627,29 @@ class ChatBot:
             and command_info.name in global_announcement_manager.get_disabled_chat_commands(message.session_id)
         )
 
+    @staticmethod
+    def _should_drop_filtered_message(message: SessionMessage) -> bool:
+        """在已绑定 BotRequestContext 后判断普通消息过滤，避免 deny 命令伪装候选。"""
+
+        if ChatBot._is_command_candidate(message):
+            return False
+        text = message.processed_plain_text or ""
+        group_info = message.message_info.group_info
+        user_info = message.message_info.user_info
+        is_banned, word = MessageUtils.check_ban_words(text)
+        if is_banned:
+            chat_name = group_info.group_name if group_info else "私聊"
+            logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
+            logger.info(f"[过滤词识别]消息中含有{word}，filtered")
+            return True
+        is_banned_regex, pattern = MessageUtils.check_ban_regex(text)
+        if is_banned_regex:
+            chat_name = group_info.group_name if group_info else "私聊"
+            logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
+            logger.info(f"[正则表达式过滤]消息匹配到{pattern}，filtered")
+            return True
+        return False
+
     async def _process_clear_context_command(self, message: SessionMessage) -> bool:
         """处理内置 ``/clear`` 指令并清空当前聊天流的 Maisaka 上下文。"""
 
@@ -1032,22 +1055,6 @@ class ChatBot:
 
             # 平台层的 @ 检测由底层 is_mentioned_bot_in_message 统一处理；此处不做用户名硬编码匹配
 
-            # 已注册命令优先进入命令链；普通消息仍需先通过聊天过滤。
-            text = message.processed_plain_text or ""
-            if not self._is_command_candidate(message):
-                is_banned, word = MessageUtils.check_ban_words(text)
-                if is_banned:
-                    chat_name = group_info.group_name if group_info else "私聊"
-                    logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
-                    logger.info(f"[过滤词识别]消息中含有{word}，filtered")
-                    return
-                is_banned_regex, pattern = MessageUtils.check_ban_regex(text)
-                if is_banned_regex:
-                    chat_name = group_info.group_name if group_info else "私聊"
-                    logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
-                    logger.info(f"[正则表达式过滤]消息匹配到{pattern}，filtered")
-                    return
-
             platform = message.platform
             user_id = user_info.user_id
             group_id = group_info.group_id if group_info else None
@@ -1097,7 +1104,14 @@ class ChatBot:
                     request_context.security_domain,
                 )
                 with bind_request_context(request_context):
+                    if self._should_drop_filtered_message(message):
+                        return
                     chat_manager.register_message(message)
+                    is_command, cmd_result, continue_process = await self._process_commands(message)
+                    if is_command and await self._handle_command_processing_result(
+                        message, cmd_result, continue_process
+                    ):
+                        return
                     await self.heartflow_message_receiver.process_message(message)
                 return
 
@@ -1108,6 +1122,8 @@ class ChatBot:
             )
             message.bot_request_context = request_context
             with bind_request_context(request_context):
+                if self._should_drop_filtered_message(message):
+                    return
                 chat_manager.register_message(message)
 
                 # message.update_chat_stream(chat)

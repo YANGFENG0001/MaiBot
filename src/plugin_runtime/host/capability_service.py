@@ -9,9 +9,11 @@ from typing import Any, Callable, Dict, List, Coroutine, TYPE_CHECKING
 from src.common.logger import get_logger
 from src.plugin_runtime.protocol.envelope import CapabilityRequestPayload, CapabilityResponsePayload, Envelope
 from src.plugin_runtime.protocol.errors import ErrorCode, RPCError
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 
 if TYPE_CHECKING:
     from src.plugin_runtime.host.authorization import AuthorizationManager
+    from src.plugin_runtime.host.invocation_scope_registry import InvocationScopeRegistry
 
 logger = get_logger("plugin_runtime.host.capability_service")
 
@@ -29,13 +31,18 @@ class CapabilityService:
     4. 执行实际操作并返回结果
     """
 
-    def __init__(self, authorization: "AuthorizationManager") -> None:
+    def __init__(
+        self,
+        authorization: "AuthorizationManager",
+        invocation_scopes: "InvocationScopeRegistry",
+    ) -> None:
         """初始化能力服务。
 
         Args:
             authorization: 能力授权管理器。
         """
         self._authorization = authorization
+        self._invocation_scopes = invocation_scopes
         # capability_name -> implementation
         self._implementations: Dict[str, CapabilityImpl] = {}
 
@@ -64,6 +71,26 @@ class CapabilityService:
 
         capability = req.capability
         args = req.args
+
+        if req.invocation_token:
+            invocation_record = self._invocation_scopes.validate(req.invocation_token, plugin_id)
+            if invocation_record is None:
+                return envelope.make_error_response(
+                    ErrorCode.E_CAPABILITY_DENIED.value,
+                    "插件请求调用授权令牌无效或已过期",
+                )
+            component_decision = plugin_scope_resolver.is_component_allowed(
+                invocation_record.plugin_id,
+                invocation_record.component_full_name,
+                invocation_record.component_type,
+                invocation_record.scope,
+                validate_overrides=False,
+            )
+            if not component_decision.allowed:
+                return envelope.make_error_response(
+                    ErrorCode.E_CAPABILITY_DENIED.value,
+                    "当前 BotProfile 已不允许该插件组件产生副作用",
+                )
 
         # 1. 权限校验
         allowed, reason = self._authorization.check_capability(plugin_id, capability)

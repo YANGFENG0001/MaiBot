@@ -1,7 +1,9 @@
 """BotProfile 数据访问、继承与普通会话路由。"""
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Mapping, Optional
+
+import json
 
 from sqlmodel import select
 
@@ -113,11 +115,73 @@ class BotProfileService:
         if effect not in {"allow", "deny"}:
             raise ValueError("工具策略 effect 只能是 allow/deny")
         with get_db_session() as session:
-            policy = session.exec(select(BotProfileToolPolicy).where(BotProfileToolPolicy.bot_profile_id == profile_id, BotProfileToolPolicy.component_name == normalized)).first()
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            policy = session.exec(
+                select(BotProfileToolPolicy).where(
+                    BotProfileToolPolicy.bot_profile_id == profile_id,
+                    BotProfileToolPolicy.component_name == normalized,
+                )
+            ).first()
             if policy is None:
                 policy = BotProfileToolPolicy(bot_profile_id=profile_id, component_name=normalized, effect=effect)
             else:
                 policy.effect = effect
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            session.add(policy)
+            return policy
+
+    def set_plugin_policy(
+        self,
+        profile_id: str,
+        plugin_id: str,
+        effect: str,
+        *,
+        overrides: Optional[Mapping[str, Any]] = None,
+        config_schema: Optional[Mapping[str, Any]] = None,
+    ) -> BotProfilePluginPolicy:
+        """保存插件策略，并在同一事务递增 Profile 策略版本。"""
+
+        normalized_plugin_id = plugin_id.strip()
+        if not normalized_plugin_id:
+            raise ValueError("plugin_id 不能为空")
+        if effect not in {"allow", "deny", "inherit"}:
+            raise ValueError("插件策略 effect 只能是 allow/deny/inherit")
+        normalized_overrides = dict(overrides or {})
+        if normalized_overrides:
+            if config_schema is None:
+                raise ValueError("保存插件配置覆盖时必须提供配置 Schema")
+            from src.plugin_runtime.config_overlay import validate_and_collect_override_paths
+
+            validate_and_collect_override_paths(config_schema, normalized_overrides)
+        overrides_json = json.dumps(normalized_overrides, ensure_ascii=False, sort_keys=True)
+
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            policy = session.exec(
+                select(BotProfilePluginPolicy).where(
+                    BotProfilePluginPolicy.bot_profile_id == profile_id,
+                    BotProfilePluginPolicy.plugin_id == normalized_plugin_id,
+                )
+            ).first()
+            if policy is None:
+                policy = BotProfilePluginPolicy(
+                    bot_profile_id=profile_id,
+                    plugin_id=normalized_plugin_id,
+                    effect=effect,
+                    overrides_json=overrides_json,
+                )
+            else:
+                policy.effect = effect
+                policy.overrides_json = overrides_json
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
             session.add(policy)
             return policy
 

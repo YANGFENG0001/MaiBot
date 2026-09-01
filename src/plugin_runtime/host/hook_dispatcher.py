@@ -27,6 +27,8 @@ from src.common.logger import get_logger
 from src.common.shutdown import is_shutdown_requested
 from src.config.config import global_config
 from src.plugin_runtime.protocol.errors import ErrorCode, RPCError
+from src.plugin_runtime.request_scope import PluginRequestScope
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 
 from .circuit_breaker import get_plugin_circuit_breaker
 from .hook_spec_registry import HookSpec, HookSpecRegistry
@@ -190,6 +192,7 @@ class HookDispatcher:
         self,
         hook_name: str,
         supervisors: Optional[Sequence["PluginRunnerSupervisor"]] = None,
+        request_scope: Optional[PluginRequestScope] = None,
         **kwargs: Any,
     ) -> HookDispatchResult:
         """触发一次命名 Hook 调用。
@@ -210,8 +213,11 @@ class HookDispatcher:
             return dispatch_result
 
         resolved_supervisors = list(supervisors) if supervisors is not None else list(self._resolve_supervisors())
+        trusted_scope = request_scope if request_scope is not None else plugin_scope_resolver.resolve_scope()
         hook_spec = self.get_hook_spec(normalized_hook_name)
-        invocation_targets = self._collect_invocation_targets(normalized_hook_name, resolved_supervisors)
+        invocation_targets = self._collect_invocation_targets(
+            normalized_hook_name, resolved_supervisors, trusted_scope
+        )
 
         if not invocation_targets:
             return dispatch_result
@@ -226,6 +232,7 @@ class HookDispatcher:
                     hook_spec=hook_spec,
                     target=target,
                     kwargs=current_kwargs,
+                    request_scope=trusted_scope,
                 )
                 continue
 
@@ -243,6 +250,7 @@ class HookDispatcher:
                 hook_spec=hook_spec,
                 target=target,
                 kwargs=current_kwargs,
+                request_scope=trusted_scope,
             )
             self._merge_blocking_result(
                 hook_spec=hook_spec,
@@ -275,6 +283,7 @@ class HookDispatcher:
         self,
         hook_name: str,
         supervisors: Sequence["PluginRunnerSupervisor"],
+        request_scope: Optional[PluginRequestScope],
     ) -> List[_HookInvocationTarget]:
         """收集并排序本次 Hook 调用的全部处理器目标。
 
@@ -290,6 +299,18 @@ class HookDispatcher:
         for supervisor in supervisors:
             source_rank = self._get_supervisor_source_rank(supervisor)
             for entry in supervisor.component_registry.get_hook_handlers(hook_name):
+                registration = supervisor._registered_plugins.get(entry.plugin_id)
+                config_schema = dict(registration.config_schema) if registration is not None else {}
+                decision = plugin_scope_resolver.is_component_allowed(
+                    entry.plugin_id,
+                    entry.full_name,
+                    "HOOK_HANDLER",
+                    request_scope,
+                    globally_enabled=bool(entry.enabled),
+                    config_schema=config_schema,
+                )
+                if not decision.allowed:
+                    continue
                 invocation_targets.append(
                     _HookInvocationTarget(
                         supervisor=supervisor,
@@ -412,6 +433,7 @@ class HookDispatcher:
         hook_spec: HookSpec,
         target: _HookInvocationTarget,
         kwargs: Dict[str, Any],
+        request_scope: Optional[PluginRequestScope],
     ) -> HookHandlerExecutionResult:
         """执行单个 Hook 处理器。
 
@@ -452,6 +474,7 @@ class HookDispatcher:
                     target.entry.name,
                     request_args,
                     timeout_ms=timeout_ms,
+                    request_scope=request_scope,
                 ),
                 timeout=max(timeout_ms / 1000.0, 0.001),
             )
@@ -527,7 +550,16 @@ class HookDispatcher:
         if raw_value is None:
             return None
         if isinstance(raw_value, dict):
-            return dict(raw_value)
+            sanitized = dict(raw_value)
+            for reserved_key in (
+                "bot_profile_id",
+                "security_domain",
+                "memory_space_id",
+                "request_scope",
+                "invocation_token",
+            ):
+                sanitized.pop(reserved_key, None)
+            return sanitized
         logger.warning("HookHandler 返回的 modified_kwargs 不是字典，已忽略")
         return None
 
@@ -635,6 +667,7 @@ class HookDispatcher:
         hook_spec: HookSpec,
         target: _HookInvocationTarget,
         kwargs: Dict[str, Any],
+        request_scope: Optional[PluginRequestScope],
     ) -> None:
         """后台调度观察型处理器。
 
@@ -657,6 +690,7 @@ class HookDispatcher:
                 hook_spec=hook_spec,
                 target=target,
                 kwargs=dict(kwargs),
+                request_scope=request_scope,
             )
         )
         self._background_tasks.add(task)
@@ -668,6 +702,7 @@ class HookDispatcher:
         hook_spec: HookSpec,
         target: _HookInvocationTarget,
         kwargs: Dict[str, Any],
+        request_scope: Optional[PluginRequestScope],
     ) -> None:
         """执行观察型处理器并吞掉控制流副作用。
 
@@ -683,6 +718,7 @@ class HookDispatcher:
             hook_spec=hook_spec,
             target=target,
             kwargs=kwargs,
+            request_scope=request_scope,
         )
 
         if not execution_result.success:

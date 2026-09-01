@@ -239,6 +239,8 @@ class RegisterPluginPayload(BaseModel):
     """订阅的全局配置热重载范围"""
     default_config: Dict[str, Any] = Field(default_factory=dict, description="插件默认配置")
     """插件默认配置"""
+    normalized_config: Dict[str, Any] = Field(default_factory=dict, description="Runner 当前归一化配置快照")
+    """Runner 当前归一化配置快照"""
     config_schema: Dict[str, Any] = Field(default_factory=dict, description="插件配置 Schema")
     """插件配置 Schema"""
 
@@ -258,12 +260,18 @@ class BootstrapPluginPayload(BaseModel):
 
 # ====== 插件调用请求和响应 ======
 class InvokePayload(BaseModel):
-    """plugin.invoke.* 请求 payload"""
+    """plugin.invoke.* 请求 payload；保留字段与模型可控 args 隔离。"""
 
     component_name: str = Field(description="要调用的组件名称")
     """要调用的组件名称"""
     args: Dict[str, Any] = Field(default_factory=dict, description="调用参数")
     """调用参数"""
+    request_scope: Dict[str, Any] = Field(default_factory=dict, description="Host 签发的请求作用域快照")
+    """Host 签发的请求作用域快照"""
+    effective_plugin_config: Dict[str, Any] = Field(default_factory=dict, description="本次调用的独立有效配置")
+    """本次调用的独立有效配置"""
+    invocation_token: str = Field(default="", description="本次调用的短生命周期授权令牌")
+    """本次调用的短生命周期授权令牌"""
 
 
 class InvokeResultPayload(BaseModel):
@@ -294,6 +302,8 @@ class CapabilityRequestPayload(BaseModel):
     """能力名称，如 send.text, db.query"""
     args: Dict[str, Any] = Field(default_factory=dict, description="调用参数")
     """调用参数"""
+    invocation_token: str = Field(default="", description="当前请求调用授权令牌")
+    """当前请求调用授权令牌"""
 
 
 class CapabilityResponsePayload(BaseModel):

@@ -92,7 +92,11 @@ from src.maisaka.monitor.events import (
 from src.maisaka.memory.person_profile import build_person_profile_injection_messages
 from src.maisaka.context.planner_messages import build_planner_user_prefix_from_session_message
 from src.maisaka.visual.mode_utils import resolve_enable_visual_planner
-from src.workspaces import bind_request_context, create_background_task_without_request_context
+from src.workspaces import (
+    bind_request_context,
+    create_background_task_without_request_context,
+    get_current_request_context,
+)
 
 if TYPE_CHECKING:
     from .runtime import MaisakaHeartFlowChatting
@@ -1536,6 +1540,7 @@ class MaisakaReasoningEngine:
 
         chat_stream = self._runtime.chat_stream
         workspace = self._runtime.refresh_workspace_context()
+        request_context = get_current_request_context()
         return ToolAvailabilityContext(
             session_id=self._runtime.session_id,
             stream_id=self._runtime.session_id,
@@ -1546,6 +1551,14 @@ class MaisakaReasoningEngine:
             workspace_id=workspace.workspace_id,
             memory_space_id=workspace.memory_space_id,
             workspace_policy_revision=workspace.policy_revision,
+            bot_profile_id=request_context.active_bot_profile_id if request_context is not None else "",
+            bot_profile_type=request_context.active_bot_profile_type if request_context is not None else "",
+            permission_group_id=request_context.permission_group_id if request_context is not None else "",
+            access_mode=request_context.access_mode if request_context is not None else "",
+            security_domain=request_context.security_domain if request_context is not None else "",
+            policy_revision=request_context.policy_revision if request_context is not None else 0,
+            audience_type=request_context.audience_type if request_context is not None else "",
+            trace_id=request_context.trace_id if request_context is not None else "",
             inherit_global_tools=workspace.inherit_global_tools,
             allowed_tools=workspace.allowed_tools,
             denied_tools=workspace.denied_tools,
@@ -1566,6 +1579,7 @@ class MaisakaReasoningEngine:
 
         chat_stream = self._runtime.chat_stream
         workspace = self._runtime.refresh_workspace_context()
+        request_context = get_current_request_context()
         return ToolExecutionContext(
             session_id=self._runtime.session_id,
             stream_id=self._runtime.session_id,
@@ -1577,6 +1591,14 @@ class MaisakaReasoningEngine:
             workspace_id=workspace.workspace_id,
             memory_space_id=workspace.memory_space_id,
             workspace_policy_revision=workspace.policy_revision,
+            bot_profile_id=request_context.active_bot_profile_id if request_context is not None else "",
+            bot_profile_type=request_context.active_bot_profile_type if request_context is not None else "",
+            permission_group_id=request_context.permission_group_id if request_context is not None else "",
+            access_mode=request_context.access_mode if request_context is not None else "",
+            security_domain=request_context.security_domain if request_context is not None else "",
+            policy_revision=request_context.policy_revision if request_context is not None else 0,
+            audience_type=request_context.audience_type if request_context is not None else "",
+            trace_id=request_context.trace_id if request_context is not None else "",
             metadata={
                 "inherit_global_tools": workspace.inherit_global_tools,
                 "allowed_tools": tuple(workspace.allowed_tools),

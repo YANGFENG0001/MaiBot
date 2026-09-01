@@ -23,6 +23,8 @@ from src.core.types import ActionActivationType, ActionInfo, CommandInfo, Compon
 from src.llm_models.payload_content.tool_option import normalize_tool_option
 from src.plugin_runtime.host.component_timeout import resolve_component_rpc_timeout_ms
 from src.plugin_runtime.host.message_utils import PluginMessageUtils
+from src.plugin_runtime.request_scope import PluginRequestScope
+from src.plugin_runtime.scope_resolver import plugin_scope_resolver
 
 if TYPE_CHECKING:
     from src.plugin_runtime.host.component_registry import ActionEntry, CommandEntry, ComponentEntry, ToolEntry
@@ -71,6 +73,37 @@ class ComponentQueryService:
         runtime_manager = self._get_runtime_manager()
         return list(runtime_manager.supervisors)
 
+    @staticmethod
+    def _get_registered_config_schema(
+        supervisor: "PluginSupervisor",
+        plugin_id: str,
+    ) -> dict[str, Any]:
+        registration = supervisor._registered_plugins.get(plugin_id)
+        if registration is None or not isinstance(registration.config_schema, dict):
+            return {}
+        return dict(registration.config_schema)
+
+    @classmethod
+    def _is_entry_allowed(
+        cls,
+        supervisor: "PluginSupervisor",
+        entry: "ComponentEntry",
+        component_type: ComponentType | str,
+        *,
+        scope: Optional[PluginRequestScope] = None,
+    ) -> bool:
+        trusted_scope = scope if scope is not None else plugin_scope_resolver.resolve_scope()
+        normalized_type = component_type.value if isinstance(component_type, ComponentType) else str(component_type)
+        decision = plugin_scope_resolver.is_component_allowed(
+            entry.plugin_id,
+            entry.full_name,
+            normalized_type,
+            trusted_scope,
+            globally_enabled=bool(entry.enabled),
+            config_schema=cls._get_registered_config_schema(supervisor, entry.plugin_id),
+        )
+        return decision.allowed
+
     def _iter_component_entries(
         self,
         component_type: ComponentType,
@@ -92,10 +125,15 @@ class ComponentQueryService:
         if host_component_type is None:
             return []
 
+        request_scope = plugin_scope_resolver.resolve_scope()
         session_id = context.session_id if context is not None else None
         is_group_chat = context.is_group_chat if context is not None else None
         group_id = context.group_id if context is not None else None
         platform = context.platform if context is not None else None
+        if request_scope is not None:
+            session_id = session_id or request_scope.session_id
+            if is_group_chat is None:
+                is_group_chat = request_scope.audience_type == "group"
         collected_entries: list[tuple["PluginSupervisor", "ComponentEntry"]] = []
         for supervisor in self._iter_supervisors():
             for component in supervisor.component_registry.get_components_by_type(
@@ -106,8 +144,25 @@ class ComponentQueryService:
                 group_id=group_id,
                 platform=platform,
             ):
+                if not self._is_entry_allowed(
+                    supervisor, component, component_type, scope=request_scope
+                ):
+                    continue
                 collected_entries.append((supervisor, component))
         return collected_entries
+
+    @classmethod
+    def _is_component_invocation_allowed(
+        cls,
+        supervisor: "PluginSupervisor",
+        plugin_id: str,
+        component_name: str,
+        component_type: ComponentType,
+    ) -> bool:
+        entry = supervisor.component_registry.get_component(f"{plugin_id}.{component_name}")
+        if entry is None:
+            return False
+        return cls._is_entry_allowed(supervisor, entry, component_type)
 
     @staticmethod
     def _coerce_action_activation_type(raw_value: Any) -> ActionActivationType:
@@ -301,6 +356,7 @@ class ComponentQueryService:
             enabled=visibility != "hidden",
             metadata={
                 "plugin_id": entry.plugin_id,
+                "component_full_name": entry.full_name,
                 "invoke_method": entry.invoke_method,
                 "legacy_component_type": entry.legacy_component_type,
                 "visibility": visibility,
@@ -349,6 +405,8 @@ class ComponentQueryService:
     def _collect_unique_component_infos(
         self,
         component_type: ComponentType,
+        *,
+        context: Optional[ToolAvailabilityContext] = None,
     ) -> Dict[str, ComponentInfo]:
         """收集某类组件的唯一信息视图。
 
@@ -360,7 +418,7 @@ class ComponentQueryService:
         """
 
         collected_components: Dict[str, ComponentInfo] = {}
-        for _supervisor, entry in self._iter_component_entries(component_type):
+        for _supervisor, entry in self._iter_component_entries(component_type, context=context):
             if entry.name in collected_components:
                 self._log_duplicate_component(component_type, entry.name)
                 continue
@@ -444,6 +502,11 @@ class ComponentQueryService:
                 invoke_args["log_prefix"] = kwargs["log_prefix"]
             if isinstance(kwargs.get("shutting_down"), bool):
                 invoke_args["shutting_down"] = kwargs["shutting_down"]
+
+            if not ComponentQueryService._is_component_invocation_allowed(
+                supervisor, plugin_id, component_name, ComponentType.ACTION
+            ):
+                return False, "当前 BotProfile 不允许使用该 Action"
 
             try:
                 response = await supervisor.invoke_plugin(
@@ -531,6 +594,11 @@ class ComponentQueryService:
             if isinstance(plugin_config, dict):
                 invoke_args["plugin_config"] = plugin_config
 
+            if not ComponentQueryService._is_component_invocation_allowed(
+                supervisor, plugin_id, component_name, ComponentType.COMMAND
+            ):
+                return False, None, False
+
             try:
                 response = await supervisor.invoke_plugin(
                     method="plugin.invoke_command",
@@ -590,6 +658,11 @@ class ComponentQueryService:
                 Any: 插件工具返回结果；若结果不是字典，则会包装为 ``{"content": ...}``。
             """
 
+            if not ComponentQueryService._is_component_invocation_allowed(
+                supervisor, plugin_id, component_name, ComponentType.TOOL
+            ):
+                return {"content": "当前 BotProfile 不允许使用该工具"}
+
             try:
                 response = await supervisor.invoke_plugin(
                     method=invoke_method,
@@ -610,64 +683,62 @@ class ComponentQueryService:
 
         return _executor
 
-    def get_action_info(self, name: str) -> Optional[ActionInfo]:
-        """获取指定动作的信息。
+    def get_action_info(
+        self,
+        name: str,
+        context: Optional[ToolAvailabilityContext] = None,
+    ) -> Optional[ActionInfo]:
+        """获取当前请求可用的指定动作信息。"""
 
-        Args:
-            name: 动作名称。
-
-        Returns:
-            Optional[ActionInfo]: 匹配到的动作信息。
-        """
-
-        matched_entry = self._get_unique_component_entry(ComponentType.ACTION, name)
+        matched_entry = self._get_unique_component_entry(ComponentType.ACTION, name, context=context)
         if matched_entry is None:
             return None
         _supervisor, entry = matched_entry
         return self._build_action_info(entry)  # type: ignore[arg-type]
 
-    def get_action_executor(self, name: str) -> Optional[ActionExecutor]:
-        """获取指定动作的执行器。
+    def get_action_executor(
+        self,
+        name: str,
+        context: Optional[ToolAvailabilityContext] = None,
+    ) -> Optional[ActionExecutor]:
+        """获取带调用前二次鉴权的 Action 执行器。"""
 
-        Args:
-            name: 动作名称。
-
-        Returns:
-            Optional[ActionExecutor]: 运行时 RPC 执行闭包。
-        """
-
-        matched_entry = self._get_unique_component_entry(ComponentType.ACTION, name)
+        matched_entry = self._get_unique_component_entry(ComponentType.ACTION, name, context=context)
         if matched_entry is None:
             return None
         supervisor, entry = matched_entry
         return self._build_action_executor(supervisor, entry.plugin_id, entry.name, entry.timeout_ms)
 
-    def get_default_actions(self) -> Dict[str, ActionInfo]:
-        """获取当前默认启用的动作集合。
+    def get_default_actions(
+        self,
+        context: Optional[ToolAvailabilityContext] = None,
+    ) -> Dict[str, ActionInfo]:
+        """获取当前请求可用的默认动作集合。"""
 
-        Returns:
-            Dict[str, ActionInfo]: 动作名到动作信息的映射。
-        """
-
-        action_infos = self._collect_unique_component_infos(ComponentType.ACTION)
+        action_infos = self._collect_unique_component_infos(ComponentType.ACTION, context=context)
         return {name: info for name, info in action_infos.items() if isinstance(info, ActionInfo) and info.enabled}
 
-    def find_command_by_text(self, text: str) -> Optional[Tuple[CommandExecutor, dict, CommandInfo]]:
-        """根据文本查找匹配的命令。
+    def find_command_by_text(
+        self,
+        text: str,
+        context: Optional[ToolAvailabilityContext] = None,
+    ) -> Optional[Tuple[CommandExecutor, dict, CommandInfo]]:
+        """先按请求作用域过滤候选，再按原注册顺序匹配命令。"""
 
-        Args:
-            text: 待匹配的文本内容。
-
-        Returns:
-            Optional[Tuple[CommandExecutor, dict, CommandInfo]]: 匹配结果。
-        """
-
-        for supervisor in self._iter_supervisors():
-            match_result = supervisor.component_registry.find_command_by_text(text)
-            if match_result is None:
+        for supervisor, entry in self._iter_component_entries(ComponentType.COMMAND, context=context):
+            matched_groups: dict[str, Any] | None = None
+            compiled_pattern = getattr(entry, "compiled_pattern", None)
+            if compiled_pattern is not None:
+                match = compiled_pattern.search(text)
+                if match is not None:
+                    matched_groups = match.groupdict()
+            if matched_groups is None:
+                aliases = getattr(entry, "aliases", [])
+                if any(text.startswith(alias) for alias in aliases):
+                    matched_groups = {}
+            if matched_groups is None:
                 continue
 
-            entry, matched_groups = match_result
             command_info = self._build_command_info(entry)  # type: ignore[arg-type]
             command_executor = self._build_command_executor(
                 supervisor,
@@ -787,6 +858,20 @@ class ComponentQueryService:
             group_id=context.group_id,
             user_id=context.user_id,
             platform=context.platform,
+            workspace_id=context.workspace_id,
+            memory_space_id=context.memory_space_id,
+            workspace_policy_revision=context.workspace_policy_revision,
+            bot_profile_id=context.bot_profile_id,
+            bot_profile_type=context.bot_profile_type,
+            permission_group_id=context.permission_group_id,
+            access_mode=context.access_mode,
+            security_domain=context.security_domain,
+            policy_revision=context.policy_revision,
+            audience_type=context.audience_type,
+            trace_id=context.trace_id,
+            inherit_global_tools=bool(context.metadata.get("inherit_global_tools", True)),
+            allowed_tools=frozenset(context.metadata.get("allowed_tools", ())),
+            denied_tools=frozenset(context.metadata.get("denied_tools", ())),
         )
 
     @staticmethod
@@ -945,6 +1030,13 @@ class ComponentQueryService:
 
         supervisor, entry = matched_entry
         tool_entry = cast("ToolEntry", entry)
+        if not self._is_entry_allowed(supervisor, tool_entry, ComponentType.TOOL):
+            return ToolExecutionResult(
+                tool_name=tool_entry.name,
+                success=False,
+                error_message=f"当前 BotProfile 不允许使用工具：{tool_entry.full_name}",
+                metadata={"plugin_id": tool_entry.plugin_id},
+            )
         invoke_payload = self._build_tool_invocation_payload(tool_entry, invocation, context)
 
         try:
