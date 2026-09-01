@@ -112,3 +112,21 @@ def test_unsupported_adapter_and_missing_scope(service):
         service.inspect_object({"object_type": "file", "object_id": "x", "memory_space_id": "s1", "partition_id": "p-source"})
     with pytest.raises(MemoryTransferAuthorityError, match="source_object_not_found"):
         service.inspect_object({"object_type": "paragraph", "object_id": "p1", "memory_space_id": "s1", "partition_id": "wrong"})
+
+
+def test_list_scoped_objects_applies_trusted_filters(service):
+    metadata = service.inspect_object({"object_type": "paragraph", "object_id": "p1", "memory_space_id": "s1", "partition_id": "p-source", "security_domain": "normal"})
+    result = service.list_scoped_objects({
+        "memory_space_id": "s1", "partition_ids": ["p-source"], "security_domain": "normal",
+        "object_types": ["paragraph", "entity"], "limit": 10,
+        "filters": {"object_type": ["paragraph"], "fingerprint": [metadata["content_fingerprint"]]},
+    })
+    assert [item["object_id"] for item in result["items"]] == ["p1"]
+
+
+def test_list_scoped_objects_rejects_unknown_filter(service):
+    with pytest.raises(MemoryTransferAuthorityError, match="invalid_request"):
+        service.list_scoped_objects({
+            "memory_space_id": "s1", "partition_ids": ["p-source"], "security_domain": "normal",
+            "object_types": ["paragraph"], "filters": {"sql": "select"},
+        })
