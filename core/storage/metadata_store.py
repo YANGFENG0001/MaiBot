@@ -175,6 +175,7 @@ class MetadataStore(
         self, *, object_type: str, object_id: str,
         memory_space_id: str = "memory-space-public", partition_id: str = "shared",
         security_domain: str = "normal", source_session_id: Optional[str] = None,
+        connection: Optional[sqlite3.Connection] = None, commit: bool = True,
     ) -> None:
         """幂等登记 A-Memorix 对象的 partition 作用域。"""
         object_type = str(object_type or "").strip().lower()
@@ -184,9 +185,10 @@ class MetadataStore(
         security_domain = str(security_domain or "normal").strip().lower()
         if not object_type or not object_id or security_domain not in {"normal", "kami"}:
             raise ValueError("invalid memory scope member")
-        conn = self._conn
+        conn = connection or self._conn
         self._ensure_memory_scope_tables(conn.cursor())
-        conn.commit()
+        if connection is None and commit:
+            conn.commit()
         now = datetime.now().timestamp()
         conn.execute(
             """INSERT OR IGNORE INTO memory_scope_members
@@ -201,7 +203,8 @@ class MetadataStore(
                 VALUES (?, ?, 1.0, ?)""",
                 (partition_id, object_id, now),
             )
-        conn.commit()
+        if connection is None and commit:
+            conn.commit()
 
     def resolve_scope_object_ids(self, *, partition_ids: Sequence[str] = (),
                                  memory_space_ids: Sequence[str] = (),
@@ -740,6 +743,22 @@ class MetadataStore(
         except sqlite3.IntegrityError:
             return False
 
+    def _get_memory_transfer_copy(self, object_type: str, object_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM memory_transfer_objects WHERE object_type=? AND target_object_id=?",
+            (object_type, object_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row[0] or "{}"))
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        payload["hash"] = object_id
+        return payload
+
     def get_paragraph(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """
         获取段落
@@ -761,7 +780,7 @@ class MetadataStore(
 
         if row:
             return self._row_to_dict(row, "paragraph")
-        return None
+        return self._get_memory_transfer_copy("paragraph", hash_value)
 
     def get_paragraphs_by_hashes(
         self,
@@ -935,7 +954,7 @@ class MetadataStore(
 
         if row:
             return self._row_to_dict(row, "entity")
-        return None
+        return self._get_memory_transfer_copy("entity", hash_value)
 
     def get_entities_by_hashes(
         self,
@@ -993,7 +1012,7 @@ class MetadataStore(
 
         if row:
             return self._row_to_dict(row, "relation")
-        return None
+        return self._get_memory_transfer_copy("relation", hash_value)
 
     def update_relation_metadata(
         self,
