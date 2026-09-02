@@ -54,6 +54,8 @@ __all__ = [
     "MemoryVectorDeleteService",
     "MemoryVectorRecoveryService",
     "MemoryVectorRuntimeService",
+    "MemoryTransferAuthorityError",
+    "MemoryTransferAuthorityService",
 ]
 
 from .memory_transfer_service import MemoryTransferAuthorityError, MemoryTransferAuthorityService
