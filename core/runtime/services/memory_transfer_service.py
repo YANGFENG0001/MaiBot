@@ -251,7 +251,19 @@ class MemoryTransferAuthorityService:
         result = json.loads(str(row[3] or "{}"))
         return {**result, "operation_key": operation_key, "mode": str(row[1]), "status": str(row[2]), "error_code": str(row[4] or ""), "payload_hash": str(row[0])}
 
-    def _begin_operation(self, *, operation_key: str, mode: str, payload_hash: str) -> Dict[str, Any] | None:
+    @staticmethod
+    def _safe_pending_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        allowed = {
+            "operation_key", "mode", "object_type", "object_id", "source_object_id",
+            "source_space_id", "source_partition_id", "target_space_id", "target_partition_id",
+            "security_domain", "source_security_domain", "target_security_domain",
+            "expected_fingerprint", "expected_source_version", "root_object_type", "root_object_id",
+        }
+        return {key: str(value) for key, value in payload.items() if key in allowed and value not in (None, "")}
+
+    def _begin_operation(
+        self, *, operation_key: str, mode: str, payload_hash: str, payload: Dict[str, Any] | None = None
+    ) -> Dict[str, Any] | None:
         stored = self._stored_operation(operation_key)
         if stored is not None:
             if stored["payload_hash"] != payload_hash or stored["mode"] != mode:
@@ -265,8 +277,8 @@ class MemoryTransferAuthorityService:
             self._conn.execute(
                 """INSERT INTO memory_transfer_operations
                    (operation_key,payload_hash,mode,status,result_json,error_code,created_at,updated_at)
-                   VALUES (?,?,?,'pending','{}','',?,?)""",
-                (operation_key, payload_hash, mode, now, now),
+                   VALUES (?,?,?,'pending',?,'',?,?)""",
+                (operation_key, payload_hash, mode, json.dumps(self._safe_pending_payload(payload or {}), sort_keys=True), now, now),
             )
             self._conn.commit()
         except sqlite3.IntegrityError:
@@ -301,7 +313,7 @@ class MemoryTransferAuthorityService:
         if source_domain != target_domain:
             raise MemoryTransferAuthorityError("cross_domain_transfer_denied")
         payload_hash = self._canonical_hash(payload)
-        existing = self._begin_operation(operation_key=operation_key, mode="link", payload_hash=payload_hash)
+        existing = self._begin_operation(operation_key=operation_key, mode="link", payload_hash=payload_hash, payload=payload)
         if existing is not None:
             return existing
         metadata = self.inspect_object(
@@ -330,7 +342,7 @@ class MemoryTransferAuthorityService:
         if source_domain == "kami" and target_domain != "kami":
             raise MemoryTransferAuthorityError("kami_source_forbidden")
         payload_hash = self._canonical_hash(payload)
-        existing = self._begin_operation(operation_key=operation_key, mode=str(payload.get("mode") or "copy"), payload_hash=payload_hash)
+        existing = self._begin_operation(operation_key=operation_key, mode=str(payload.get("mode") or "copy"), payload_hash=payload_hash, payload=payload)
         if existing is not None:
             return existing
         metadata = self.inspect_object({"object_type": payload["object_type"], "object_id": payload.get("source_object_id"), "memory_space_id": payload.get("source_space_id"), "partition_id": payload.get("source_partition_id"), "security_domain": source_domain})
@@ -390,6 +402,53 @@ class MemoryTransferAuthorityService:
 
     def reconcile_transfer_operation(self, operation_key: str) -> Dict[str, Any]:
         result = self.get_transfer_operation(operation_key)
-        if result["status"] == "pending":
+        if result["status"] != "pending":
+            return result
+        row = self._conn.execute(
+            "SELECT result_json FROM memory_transfer_operations WHERE operation_key=?", (operation_key,)
+        ).fetchone()
+        try:
+            payload = json.loads(str(row[0] or "{}")) if row else {}
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict) or not payload:
             return {**result, "status": "unknown", "error_code": "unknown_result_needs_reconcile"}
-        return result
+        object_type = str(payload.get("object_type") or "").strip()
+        source_id = str(payload.get("source_object_id") or payload.get("object_id") or "").strip()
+        target_space = str(payload.get("target_space_id") or "").strip()
+        target_partition = str(payload.get("target_partition_id") or "").strip()
+        domain = str(payload.get("target_security_domain") or payload.get("security_domain") or "normal")
+        mode = str(payload.get("mode") or result.get("mode") or "copy")
+        if not object_type or not source_id or not target_space or not target_partition:
+            return {**result, "status": "unknown", "error_code": "unknown_result_needs_reconcile"}
+        if mode == "link":
+            applied = self._scope_row(
+                object_type=object_type, object_id=source_id, memory_space_id=target_space,
+                partition_id=target_partition, security_domain=domain,
+            ) is not None
+            if applied:
+                return self._finish_operation(operation_key, {
+                    "success": True, "operation_key": operation_key, "mode": "link",
+                    "status": "applied", "object_type": object_type, "source_object_id": source_id,
+                    "target_object_id": source_id, "target_space_id": target_space,
+                    "target_partition_id": target_partition,
+                })
+            return {**result, "status": "not_applied", "error_code": ""}
+        target_id = sha256(f"a-memorix-copy:{operation_key}:{object_type}:{source_id}".encode()).hexdigest()
+        artifact = self._conn.execute(
+            "SELECT 1 FROM memory_transfer_objects WHERE target_object_id=? AND object_type=?",
+            (target_id, object_type),
+        ).fetchone()
+        membership = self._scope_row(
+            object_type=object_type, object_id=target_id, memory_space_id=target_space,
+            partition_id=target_partition, security_domain=domain,
+        ) is not None
+        if artifact is not None and membership:
+            return self._finish_operation(operation_key, {
+                "success": True, "operation_key": operation_key, "mode": mode, "status": "applied",
+                "object_type": object_type, "source_object_id": source_id, "target_object_id": target_id,
+                "target_space_id": target_space, "target_partition_id": target_partition,
+            })
+        if artifact is None and not membership:
+            return {**result, "status": "not_applied", "error_code": ""}
+        return {**result, "status": "unknown", "error_code": "unknown_result_needs_reconcile"}
