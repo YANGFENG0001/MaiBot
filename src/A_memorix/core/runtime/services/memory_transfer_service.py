@@ -287,7 +287,7 @@ class MemoryTransferAuthorityService:
             if stored is None:
                 raise
             if stored["payload_hash"] != payload_hash or stored["mode"] != mode:
-                raise MemoryTransferAuthorityError("operation_key_payload_conflict")
+                raise MemoryTransferAuthorityError("operation_key_payload_conflict") from None
             stored.pop("payload_hash", None)
             if stored.get("status") == "applied":
                 stored["status"] = "already_applied"
