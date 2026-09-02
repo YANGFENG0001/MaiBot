@@ -12,6 +12,7 @@ from hashlib import sha256
 from typing import Any, Dict
 
 import json
+import sqlite3
 
 SUPPORTED_OBJECT_TYPES = frozenset({"paragraph", "entity", "relation"})
 TRANSFER_STATUSES = frozenset({"applied", "already_applied", "not_applied", "unknown", "rejected"})
@@ -260,13 +261,25 @@ class MemoryTransferAuthorityService:
                 stored["status"] = "already_applied"
             return stored
         now = datetime.now().timestamp()
-        self._conn.execute(
-            """INSERT INTO memory_transfer_operations
-               (operation_key,payload_hash,mode,status,result_json,error_code,created_at,updated_at)
-               VALUES (?,?,?,'pending','{}','',?,?)""",
-            (operation_key, payload_hash, mode, now, now),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute(
+                """INSERT INTO memory_transfer_operations
+                   (operation_key,payload_hash,mode,status,result_json,error_code,created_at,updated_at)
+                   VALUES (?,?,?,'pending','{}','',?,?)""",
+                (operation_key, payload_hash, mode, now, now),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError:
+            self._conn.rollback()
+            stored = self._stored_operation(operation_key)
+            if stored is None:
+                raise
+            if stored["payload_hash"] != payload_hash or stored["mode"] != mode:
+                raise MemoryTransferAuthorityError("operation_key_payload_conflict")
+            stored.pop("payload_hash", None)
+            if stored.get("status") == "applied":
+                stored["status"] = "already_applied"
+            return stored
         return None
 
     def _finish_operation(self, operation_key: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -304,7 +317,7 @@ class MemoryTransferAuthorityService:
         target_partition = self._require(payload.get("target_partition_id"), "target_not_found")
         self.metadata_store.register_scope_member(
             object_type=metadata["object_type"], object_id=metadata["object_id"], memory_space_id=target_space,
-            partition_id=target_partition, security_domain=target_domain
+            partition_id=target_partition, security_domain=target_domain, connection=self._conn, commit=False
         )
         return self._finish_operation(operation_key, {**metadata, "success": True, "operation_key": operation_key, "mode": "link", "status": "applied", "source_object_id": metadata["object_id"], "target_object_id": metadata["object_id"], "target_space_id": target_space, "target_partition_id": target_partition, "target_security_domain": target_domain})
 
@@ -324,6 +337,12 @@ class MemoryTransferAuthorityService:
         target_space = self._require(payload.get("target_space_id"), "target_not_found")
         target_partition = self._require(payload.get("target_partition_id"), "target_not_found")
         snapshot = self._object_snapshot(metadata["object_type"], metadata["object_id"])
+        expected_fingerprint = str(payload.get("expected_fingerprint") or "").strip()
+        expected_version = str(payload.get("expected_source_version") or "").strip()
+        if expected_fingerprint and expected_fingerprint != metadata["content_fingerprint"]:
+            raise MemoryTransferAuthorityError("source_precondition_failed")
+        if expected_version and expected_version != metadata["source_version"]:
+            raise MemoryTransferAuthorityError("source_precondition_failed")
         target_object_id = sha256(f"a-memorix-copy:{operation_key}:{metadata['object_type']}:{metadata['object_id']}".encode()).hexdigest()
         root_type = str(payload.get("root_object_type") or metadata["root_object_type"])
         root_id = str(payload.get("root_object_id") or metadata["root_object_id"])
@@ -334,9 +353,32 @@ class MemoryTransferAuthorityService:
                 source_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (target_object_id, metadata["object_type"], metadata["object_id"], metadata["memory_space_id"], metadata["partition_id"], target_space, target_partition, target_domain, metadata["content_fingerprint"], root_type, root_id, json.dumps(snapshot["snapshot"], ensure_ascii=False, sort_keys=True, default=str), metadata["source_version"], datetime.now().timestamp()),
         )
+        self._materialize_copy(metadata["object_type"], target_object_id, snapshot["snapshot"])
+        self.metadata_store.register_scope_member(
+            object_type=metadata["object_type"], object_id=target_object_id, memory_space_id=target_space,
+            partition_id=target_partition, security_domain=target_domain, connection=self._conn, commit=False
+        )
         self._conn.commit()
-        self.metadata_store.register_scope_member(object_type=metadata["object_type"], object_id=target_object_id, memory_space_id=target_space, partition_id=target_partition, security_domain=target_domain)
         return self._finish_operation(operation_key, {"success": True, "operation_key": operation_key, "mode": str(payload.get("mode") or "copy"), "status": "applied", "object_type": metadata["object_type"], "source_object_id": metadata["object_id"], "target_object_id": target_object_id, "source_space_id": metadata["memory_space_id"], "source_partition_id": metadata["partition_id"], "target_space_id": target_space, "target_partition_id": target_partition, "source_security_domain": source_domain, "target_security_domain": target_domain, "source_fingerprint": metadata["content_fingerprint"], "target_fingerprint": metadata["content_fingerprint"], "root_object_type": root_type, "root_object_id": root_id, "source_version": metadata["source_version"]})
+
+    def _materialize_copy(self, object_type: str, target_object_id: str, snapshot: Dict[str, Any]) -> None:
+        table = {"paragraph": "paragraphs", "entity": "entities", "relation": "relations"}[object_type]
+        columns = [str(item[0]) for item in self._conn.execute(f"SELECT name FROM pragma_table_info('{table}')")]
+        values = {key: value for key, value in snapshot.items() if key in columns}
+        values["hash"] = target_object_id
+        if object_type == "paragraph":
+            values["is_deleted"] = 0
+            values["deleted_at"] = None
+        if object_type == "relation" and "is_inactive" in columns:
+            values["is_inactive"] = 0
+        insert_columns = [column for column in columns if column in values]
+        if not insert_columns:
+            raise MemoryTransferAuthorityError("copy_projection_failed")
+        placeholders = ",".join("?" for _ in insert_columns)
+        self._conn.execute(
+            f"INSERT OR IGNORE INTO {table} ({','.join(insert_columns)}) VALUES ({placeholders})",
+            tuple(values[column] for column in insert_columns),
+        )
 
     def get_transfer_operation(self, operation_key: str) -> Dict[str, Any]:
         key = self._require(operation_key, "invalid_request")
