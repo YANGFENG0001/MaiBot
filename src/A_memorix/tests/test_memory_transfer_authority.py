@@ -124,6 +124,31 @@ def test_list_scoped_objects_applies_trusted_filters(service):
     assert [item["object_id"] for item in result["items"]] == ["p1"]
 
 
+def test_list_scoped_objects_prefilters_requested_ids_before_limit(service):
+    store = service.metadata_store
+    store.conn.execute("INSERT INTO paragraphs VALUES ('p0','not requested',1,1)")
+    store.register_scope_member(
+        object_type="paragraph",
+        object_id="p0",
+        memory_space_id="s1",
+        partition_id="p-source",
+        security_domain="normal",
+    )
+
+    result = service.list_scoped_objects({
+        "memory_space_id": "s1",
+        "partition_ids": ["p-source"],
+        "security_domain": "normal",
+        "object_types": ["paragraph"],
+        "object_ids": ["p1"],
+        "limit": 1,
+    })
+
+    assert [item["object_id"] for item in result["items"]] == ["p1"]
+    assert result["count"] == 1
+    assert result["has_more"] is False
+
+
 def test_list_scoped_objects_rejects_unknown_filter(service):
     with pytest.raises(MemoryTransferAuthorityError, match="invalid_request"):
         service.list_scoped_objects({
