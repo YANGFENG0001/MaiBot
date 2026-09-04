@@ -197,12 +197,26 @@ class MemoryTransferAuthorityService:
             limit = min(limit, filter_limit)
         placeholders_p = ",".join("?" for _ in partitions)
         placeholders_t = ",".join("?" for _ in object_types)
-        params: list[Any] = [space_id, domain, *partitions, *object_types, limit + 1]
+        object_id_clause = ""
+        requested_id_params: list[str] = []
+        if requested_ids:
+            requested_id_params = sorted(requested_ids)
+            placeholders_i = ",".join("?" for _ in requested_id_params)
+            object_id_clause = f" AND object_id IN ({placeholders_i})"
+        params: list[Any] = [
+            space_id,
+            domain,
+            *partitions,
+            *object_types,
+            *requested_id_params,
+            limit + 1,
+        ]
         rows = self._conn.execute(
             f"""SELECT object_type, object_id, memory_space_id, partition_id, security_domain
                 FROM memory_scope_members
                 WHERE memory_space_id=? AND security_domain=?
                   AND partition_id IN ({placeholders_p}) AND object_type IN ({placeholders_t})
+                  {object_id_clause}
                 ORDER BY object_type, object_id LIMIT ?""",
             params,
         ).fetchall()
