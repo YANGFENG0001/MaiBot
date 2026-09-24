@@ -729,4 +729,50 @@ class MemoryService:
         return await self.maintain_memory(action="protect", target=target, hours=hours)
 
 
+    async def list_scoped_objects(
+        self,
+        *,
+        memory_space_id: str,
+        partition_ids,
+        security_domain: str,
+        object_types,
+        object_ids=(),
+        limit: int = 100,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = await self._invoke(
+            "list_scoped_objects",
+            {
+                "memory_space_id": memory_space_id,
+                "partition_ids": list(partition_ids),
+                "security_domain": security_domain,
+                "object_types": list(object_types),
+                "object_ids": list(object_ids),
+                "limit": int(limit),
+                "filters": dict(filters or {}),
+            },
+        )
+        return payload if isinstance(payload, dict) else {"items": [], "has_more": False, "error": "invalid_payload"}
+
+    async def inspect_object(self, **kwargs) -> Dict[str, Any]:
+        payload = await self._invoke("inspect_object", kwargs)
+        return payload if isinstance(payload, dict) else {"success": False, "error": "invalid_payload"}
+
+    async def link_object_to_scope(self, **kwargs) -> Dict[str, Any]:
+        payload = await self._invoke("link_object_to_scope", kwargs)
+        return payload if isinstance(payload, dict) else {"status": "unknown", "error_code": "invalid_payload"}
+
+    async def copy_object_to_scope(self, **kwargs) -> Dict[str, Any]:
+        payload = await self._invoke("copy_object_to_scope", kwargs)
+        return payload if isinstance(payload, dict) else {"status": "unknown", "error_code": "invalid_payload"}
+
+    async def get_transfer_operation(self, operation_key: str) -> Dict[str, Any]:
+        payload = await self._invoke("get_transfer_operation", {"operation_key": operation_key})
+        return payload if isinstance(payload, dict) else {"status": "unknown", "error_code": "invalid_payload"}
+
+    async def reconcile_transfer_operation(self, operation_key: str) -> Dict[str, Any]:
+        payload = await self._invoke("reconcile_transfer_operation", {"operation_key": operation_key})
+        return payload if isinstance(payload, dict) else {"status": "unknown", "error_code": "invalid_payload"}
+
+
 memory_service = MemoryService()

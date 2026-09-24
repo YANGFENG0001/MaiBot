@@ -22,6 +22,7 @@ from src.webui.routers.emoji import router as emoji_router
 from src.webui.routers.expression import router as expression_router
 from src.webui.routers.jargon import router as jargon_router
 from src.webui.routers.memory import router as memory_router
+from src.webui.routers.memory_transfers import router as memory_transfers_router
 from src.webui.routers.operations import router as operations_router
 from src.webui.routers.mcp import router as mcp_router
 from src.webui.routers.model import router as model_router
@@ -76,6 +77,7 @@ router.include_router(search_router)
 router.include_router(model_router)
 # 注册长期记忆管理路由
 router.include_router(memory_router)
+router.include_router(memory_transfers_router)
 # 注册 Workspace 子系统管理路由
 router.include_router(workspaces_router)
 # 注册 WebSocket 认证路由

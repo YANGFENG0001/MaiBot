@@ -963,6 +963,7 @@ class MemoryTransferJob(SQLModel, table=True):
     """选择性链接、复制或发布记忆的可审计任务。"""
 
     __tablename__ = "memory_transfer_jobs"  # type: ignore
+    __table_args__ = (UniqueConstraint("idempotency_key", name="uq_memory_transfer_job_idempotency"),)
 
     id: str = Field(primary_key=True, max_length=64)
     source_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
@@ -971,10 +972,165 @@ class MemoryTransferJob(SQLModel, table=True):
     filters_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
     approval_policy: str = Field(default="manual", index=True, max_length=16)
     conflict_policy: str = Field(default="skip", max_length=16)
-    status: str = Field(default="pending", index=True, max_length=16)
+    status: str = Field(default="pending", index=True, max_length=24)
     created_by: str = Field(default="webui", max_length=64)
+    workspace_id: Optional[str] = Field(default=None, foreign_key="workspaces.id", index=True, max_length=64)
+    principal_id: str = Field(default="", index=True, max_length=128)
+    bot_profile_id: Optional[str] = Field(default=None, foreign_key="bot_profiles.id", index=True, max_length=64)
+    permission_group_id: Optional[str] = Field(
+        default=None, foreign_key="memory_permission_groups.id", index=True, max_length=64
+    )
+    security_domain: str = Field(default="normal", index=True, max_length=16)
+    idempotency_key: str = Field(default="", index=True, max_length=128)
+    selection_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    source_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    target_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    policy_snapshot_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    policy_snapshot_hash: str = Field(default="", index=True, max_length=128)
+    plan_revision: int = Field(default=1, index=True)
+    plan_hash: str = Field(default="", index=True, max_length=128)
+    source_space_revision: int = Field(default=1)
+    target_space_revision: int = Field(default=1)
+    approval_required: bool = Field(default=True)
+    approval_state: str = Field(default="not_required", index=True, max_length=16)
+    retry_count: int = Field(default=0)
+    max_retries: int = Field(default=3)
+    next_retry_at: Optional[datetime] = Field(default=None, index=True)
+    lease_token_hash: Optional[str] = Field(default=None, max_length=128)
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
+    started_at: Optional[datetime] = Field(default=None)
+    completed_at: Optional[datetime] = Field(default=None)
+    cancelled_at: Optional[datetime] = Field(default=None)
+    cancel_requested: bool = Field(default=False, index=True)
+    last_error_code: str = Field(default="", index=True, max_length=64)
+    last_error_detail: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
     created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
     updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
+
+
+class MemoryTransferItem(SQLModel, table=True):
+    __tablename__ = "memory_transfer_items"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id", "plan_revision", "object_type", "source_object_id", "target_partition_id",
+            name="uq_memory_transfer_item_source",
+        ),
+        UniqueConstraint("operation_key", name="uq_memory_transfer_item_operation"),
+    )
+
+    id: str = Field(primary_key=True, max_length=64)
+    job_id: str = Field(foreign_key="memory_transfer_jobs.id", index=True, max_length=64)
+    mode: str = Field(index=True, max_length=16)
+    plan_revision: int = Field(default=1, index=True)
+    superseded: bool = Field(default=False, index=True)
+    object_type: str = Field(index=True, max_length=32)
+    source_object_id: str = Field(index=True, max_length=255)
+    target_object_id: Optional[str] = Field(default=None, index=True, max_length=255)
+    source_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    source_partition_id: str = Field(foreign_key="memory_partitions.id", index=True, max_length=96)
+    target_space_id: str = Field(foreign_key="memory_spaces.id", index=True, max_length=64)
+    target_partition_id: str = Field(foreign_key="memory_partitions.id", index=True, max_length=96)
+    root_object_type: str = Field(default="", max_length=32)
+    root_object_id: str = Field(default="", max_length=255)
+    content_fingerprint: str = Field(default="", index=True, max_length=128)
+    source_version: str = Field(default="", index=True, max_length=128)
+    source_snapshot_hash: str = Field(default="", index=True, max_length=128)
+    operation_key: str = Field(index=True, max_length=160)
+    status: str = Field(default="planned", index=True, max_length=24)
+    conflict_code: str = Field(default="", max_length=64)
+    error_code: str = Field(default="", max_length=64)
+    error_detail: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    attempt_count: int = Field(default=0)
+    ancestry_hash: str = Field(default="", index=True, max_length=128)
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    updated_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemoryTransferLineage(SQLModel, table=True):
+    __tablename__ = "memory_transfer_lineage"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "relation_type", "object_type", "object_id", "target_partition_id",
+            name="uq_memory_transfer_lineage_edge",
+        ),
+        # A canonical undirected reservation key serializes concurrent reverse edges.
+        UniqueConstraint("edge_key", name="uq_memory_transfer_lineage_edge_key"),
+    )
+
+    id: str = Field(primary_key=True, max_length=64)
+    item_id: str = Field(foreign_key="memory_transfer_items.id", index=True, max_length=64)
+    job_id: str = Field(foreign_key="memory_transfer_jobs.id", index=True, max_length=64)
+    relation_type: str = Field(index=True, max_length=16)
+    object_type: str = Field(index=True, max_length=32)
+    object_id: str = Field(index=True, max_length=255)
+    source_object_type: str = Field(max_length=32)
+    source_object_id: str = Field(index=True, max_length=255)
+    source_space_id: str = Field(max_length=64)
+    source_partition_id: str = Field(index=True, max_length=96)
+    target_space_id: str = Field(max_length=64)
+    target_partition_id: str = Field(index=True, max_length=96)
+    root_object_type: str = Field(default="", max_length=32)
+    root_object_id: str = Field(default="", index=True, max_length=255)
+    depth: int = Field(default=0)
+    ancestry_hash: str = Field(default="", index=True, max_length=128)
+    edge_key: Optional[str] = Field(default=None, index=True, max_length=512)
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemoryTransferApproval(SQLModel, table=True):
+    __tablename__ = "memory_transfer_approvals"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id", "plan_revision", "plan_hash", "policy_snapshot_hash", "actor_id", "decision",
+            name="uq_memory_transfer_approval",
+        ),
+    )
+
+    id: str = Field(primary_key=True, max_length=64)
+    job_id: str = Field(foreign_key="memory_transfer_jobs.id", index=True, max_length=64)
+    decision: str = Field(index=True, max_length=16)
+    actor_id: str = Field(max_length=255)
+    actor_type: str = Field(default="user", max_length=32)
+    policy_revision: int
+    policy_snapshot_hash: str = Field(default="", index=True, max_length=128)
+    plan_revision: int = Field(default=1, index=True)
+    plan_hash: str = Field(index=True, max_length=128)
+    comment: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+
+
+class MemoryTransferAttempt(SQLModel, table=True):
+    __tablename__ = "memory_transfer_attempts"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("job_id", "item_id", "attempt_no", name="uq_memory_transfer_attempt"),
+    )
+
+    id: str = Field(primary_key=True, max_length=64)
+    job_id: str = Field(foreign_key="memory_transfer_jobs.id", index=True, max_length=64)
+    item_id: Optional[str] = Field(default=None, foreign_key="memory_transfer_items.id", index=True, max_length=64)
+    attempt_no: int
+    lease_token_hash: str = Field(max_length=128)
+    worker_id: str = Field(max_length=128)
+    status: str = Field(default="running", index=True, max_length=24)
+    error_code: str = Field(default="", max_length=64)
+    error_detail: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    started_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, nullable=False))
+    finished_at: Optional[datetime] = None
+
+
+class MemoryTransferEvent(SQLModel, table=True):
+    __tablename__ = "memory_transfer_events"  # type: ignore
+
+    id: str = Field(primary_key=True, max_length=64)
+    job_id: str = Field(foreign_key="memory_transfer_jobs.id", index=True, max_length=64)
+    item_id: Optional[str] = Field(default=None, foreign_key="memory_transfer_items.id", index=True, max_length=64)
+    event_type: str = Field(index=True, max_length=48)
+    actor_id: str = Field(default="system", max_length=255)
+    from_status: str = Field(default="", max_length=24)
+    to_status: str = Field(default="", max_length=24)
+    result_code: str = Field(default="", max_length=64)
+    details_json: str = Field(default="{}", sa_column=Column(Text, nullable=False, server_default="{}"))
+    created_at: datetime = Field(default_factory=datetime.now, sa_column=Column(DateTime, index=True, nullable=False))
 
 
 class WorkspaceAuditLog(SQLModel, table=True):

@@ -34,6 +34,20 @@ NORMAL_CAPABILITIES = frozenset(
         "kami.use_in_group",
         "memory.transfer.import",
         "memory.transfer.publish",
+        "memory.transfer.read_source",
+        "memory.transfer.write_target",
+        "memory.transfer.link",
+        "memory.transfer.copy",
+        "memory.transfer.approve",
+        "memory.transfer.auto_safe",
+        "memory.transfer.auto_approve_safe",
+        "memory.transfer.retry",
+        "memory.transfer.cancel",
+        "memory.transfer.cross_space_write",
+        "memory.transfer.cross_domain_copy",
+        "memory.transfer.cross_domain",
+        "memory.transfer.kami_link",
+        "memory.transfer.kami_copy",
     }
 )
 
