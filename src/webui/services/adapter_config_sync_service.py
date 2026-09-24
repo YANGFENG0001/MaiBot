@@ -144,6 +144,14 @@ class AdapterConfigSyncService:
         return changed
 
     @staticmethod
+    def _update_napcat_webui(data: Dict[str, Any], token: str) -> bool:
+        changed = False
+        if data.get("token") != token:
+            data["token"] = token
+            changed = True
+        return changed
+
+    @staticmethod
     def _update_snowluma(data: Dict[str, Any], token: str, port: int) -> bool:
         changed = False
         networks = data.get("networks")
@@ -201,11 +209,32 @@ class AdapterConfigSyncService:
                 _write_json_atomic(runtime_file, data)
                 changed_paths.append(str(runtime_file))
 
+        if profile.runtime_kind == "napcat-onebot11":
+            webui_file = root / "webui.json"
+            webui_data: Dict[str, Any]
+            if webui_file.exists():
+                webui_data = json.loads(webui_file.read_text(encoding="utf-8"))
+                if not isinstance(webui_data, dict):
+                    raise ValueError(f"运行时配置根节点不是对象: {webui_file}")
+            else:
+                webui_data = {
+                    "host": "0.0.0.0",
+                    "port": 6099,
+                    "loginRate": 10,
+                    "autoLoginAccount": "",
+                    "theme": {"dark": {}, "light": {}},
+                    "disableWebUI": False,
+                    "disableNonLANAccess": False,
+                }
+            if self._update_napcat_webui(webui_data, token):
+                _write_json_atomic(webui_file, webui_data)
+                changed_paths.append(str(webui_file))
+
         return {
             "supported": True,
             "available": True,
             "runtime_root": str(root),
-            "checked_paths": [str(path) for path in runtime_files],
+            "checked_paths": [str(path) for path in runtime_files] + ([str(root / "webui.json")] if profile.runtime_kind == "napcat-onebot11" else []),
             "changed_paths": changed_paths,
             "message": "适配器运行时配置已同步" if changed_paths else "适配器运行时 Token 已一致",
         }
