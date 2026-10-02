@@ -1102,7 +1102,7 @@ describe('usePluginConfigEditor', () => {
     expect(result.current.hasChanges).toBe(false)
     expect(toastMock).toHaveBeenCalledWith({
       title: '配置已保存',
-      description: '更改将在插件重新加载后生效',
+      description: '已重新读取服务端配置，运行时会自动应用更改',
     })
   })
 

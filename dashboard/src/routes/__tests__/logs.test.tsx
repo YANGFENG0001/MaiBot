@@ -78,6 +78,9 @@ vi.mock('../statistics', () => ({
 const HINT_DISMISSED_KEY = 'log-viewer-switch-hint-dismissed'
 const ACTIVE_TAB_KEY = 'log-viewer-active-tab'
 
+/** 日期筛选用例使用的固定日志月份：2026-08（与 makeLog 的时间戳对齐）。 */
+const LOG_MONTH = new Date(2026, 7, 1)
+
 function makeLog(id: string, overrides: Partial<LogEntry> = {}): LogEntry {
   return {
     id,
@@ -86,6 +89,29 @@ function makeLog(id: string, overrides: Partial<LogEntry> = {}): LogEntry {
     module: 'core.chat',
     timestamp: '2026-07-24 08:00:00',
     ...overrides,
+  }
+}
+
+/**
+ * 把日期选择器的月份翻到目标月。
+ * 日历默认展示运行当月的日期，若直接按「10 日」取按钮，用例会随运行月份漂移。
+ */
+async function gotoMonth(
+  user: ReturnType<typeof userEvent.setup>,
+  calendar: HTMLElement,
+  target: Date,
+) {
+  const root = calendar.closest('.rdp-root') ?? calendar
+  const now = new Date()
+  const delta =
+    (now.getFullYear() - target.getFullYear()) * 12 + (now.getMonth() - target.getMonth())
+  const selector = delta >= 0 ? '.rdp-button_previous' : '.rdp-button_next'
+  for (let step = 0; step < Math.abs(delta); step += 1) {
+    const button = root.querySelector<HTMLButtonElement>(selector)
+    if (!button) {
+      throw new Error('未找到日期选择器的月份切换按钮')
+    }
+    await user.click(button)
   }
 }
 
@@ -434,7 +460,8 @@ describe('LogViewerPage 终端面板', () => {
 
     await user.click(screen.getByRole('button', { name: /开始日期/ }))
     const startCalendar = await screen.findByRole('grid')
-    await user.click(within(startCalendar).getByRole('button', { name: /10/ }))
+    await gotoMonth(user, startCalendar, LOG_MONTH)
+    await user.click(within(startCalendar).getByRole('button', { name: /月10日/ }))
 
     expect(screen.queryAllByText('月初日志')).toHaveLength(0)
     expect(screen.getAllByText('月中日志').length).toBeGreaterThan(0)
@@ -443,7 +470,8 @@ describe('LogViewerPage 终端面板', () => {
 
     await user.click(screen.getByRole('button', { name: /结束日期/ }))
     const endCalendar = await screen.findByRole('grid')
-    await user.click(within(endCalendar).getByRole('button', { name: /15/ }))
+    await gotoMonth(user, endCalendar, LOG_MONTH)
+    await user.click(within(endCalendar).getByRole('button', { name: /月15日/ }))
 
     expect(screen.getAllByText('月中日志').length).toBeGreaterThan(0)
     expect(screen.queryAllByText('月末日志')).toHaveLength(0)

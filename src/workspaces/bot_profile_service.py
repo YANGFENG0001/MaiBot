@@ -10,6 +10,7 @@ from sqlmodel import select
 from src.common.database.database import get_db_session
 from src.common.database.database_model import (
     BotProfile,
+    BotProfileMemoryRule,
     BotProfilePluginPolicy,
     BotProfileToolPolicy,
     BotRouteState,
@@ -93,6 +94,155 @@ class BotProfileService:
                 ).all()
                 resolved.update({policy.plugin_id: policy for policy in policies})
         return resolved
+
+    def list_profiles(self) -> list[BotProfile]:
+        """按公共 -> 分组 -> Kami 的顺序返回全部 BotProfile。"""
+
+        with get_db_session() as session:
+            profiles = session.exec(select(BotProfile)).all()
+        order = {"public": 0, "group": 1, "kami": 2}
+        return sorted(profiles, key=lambda item: (order.get(item.profile_type, 9), item.name))
+
+    def update_profile(self, profile_id: str, **changes: Any) -> BotProfile:
+        """更新可继承字段；父级变更走 validate_parent 防止成环。"""
+
+        allowed = {
+            "parent_profile_id",
+            "persona_profile_id",
+            "inherit_parent_persona",
+            "inherit_parent_tools",
+            "inherit_parent_plugins",
+            "enabled",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"不支持的 BotProfile 字段: {', '.join(sorted(unknown))}")
+        if "parent_profile_id" in changes:
+            self.validate_parent(profile_id, changes["parent_profile_id"])
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            if profile.profile_type == "kami" and changes.get("parent_profile_id"):
+                raise ValueError("Kami BotProfile 必须完全独立")
+            for key, value in changes.items():
+                setattr(profile, key, value)
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            return profile
+
+    def remove_tool_policy(self, profile_id: str, component_name: str) -> bool:
+        """删除 Profile 工具策略并递增策略版本。"""
+
+        normalized = component_name.strip()
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            policy = session.exec(
+                select(BotProfileToolPolicy).where(
+                    BotProfileToolPolicy.bot_profile_id == profile_id,
+                    BotProfileToolPolicy.component_name == normalized,
+                )
+            ).first()
+            if policy is None:
+                return False
+            session.delete(policy)
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            return True
+
+    def remove_plugin_policy(self, profile_id: str, plugin_id: str) -> bool:
+        """删除 Profile 插件策略并递增策略版本。"""
+
+        normalized = plugin_id.strip()
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            policy = session.exec(
+                select(BotProfilePluginPolicy).where(
+                    BotProfilePluginPolicy.bot_profile_id == profile_id,
+                    BotProfilePluginPolicy.plugin_id == normalized,
+                )
+            ).first()
+            if policy is None:
+                return False
+            session.delete(policy)
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            return True
+
+    def list_memory_rules(self, profile_id: str) -> list[BotProfileMemoryRule]:
+        with get_db_session() as session:
+            return list(
+                session.exec(
+                    select(BotProfileMemoryRule)
+                    .where(BotProfileMemoryRule.bot_profile_id == profile_id)
+                    .order_by(BotProfileMemoryRule.target_space_id)
+                ).all()
+            )
+
+    def set_memory_rule(
+        self,
+        profile_id: str,
+        target_space_id: str,
+        can_read: bool,
+        filters: Optional[Mapping[str, Any]] = None,
+    ) -> BotProfileMemoryRule:
+        """保存 Profile 对目标记忆空间的读取规则并递增策略版本。"""
+
+        normalized_space = target_space_id.strip()
+        if not normalized_space:
+            raise ValueError("target_space_id 不能为空")
+        filters_json = json.dumps(dict(filters or {}), ensure_ascii=False, sort_keys=True)
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            rule = session.exec(
+                select(BotProfileMemoryRule).where(
+                    BotProfileMemoryRule.bot_profile_id == profile_id,
+                    BotProfileMemoryRule.target_space_id == normalized_space,
+                )
+            ).first()
+            if rule is None:
+                rule = BotProfileMemoryRule(
+                    bot_profile_id=profile_id,
+                    target_space_id=normalized_space,
+                    can_read=can_read,
+                    filters_json=filters_json,
+                )
+            else:
+                rule.can_read = can_read
+                rule.filters_json = filters_json
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            session.add(rule)
+            return rule
+
+    def remove_memory_rule(self, profile_id: str, target_space_id: str) -> bool:
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                raise ValueError(f"BotProfile 不存在: {profile_id}")
+            rule = session.exec(
+                select(BotProfileMemoryRule).where(
+                    BotProfileMemoryRule.bot_profile_id == profile_id,
+                    BotProfileMemoryRule.target_space_id == target_space_id,
+                )
+            ).first()
+            if rule is None:
+                return False
+            session.delete(rule)
+            profile.policy_revision += 1
+            profile.updated_at = datetime.now()
+            session.add(profile)
+            return True
 
     def set_parent(self, profile_id: str, parent_profile_id: Optional[str]) -> BotProfile:
         self.validate_parent(profile_id, parent_profile_id)
