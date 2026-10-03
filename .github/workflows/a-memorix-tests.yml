@@ -28,4 +28,6 @@ jobs:
       - name: 安装项目依赖
         run: uv sync --frozen --group dev
       - name: 运行 A_Memorix 测试
-        run: uv run pytest -q pytests/A_memorix_test pytests/webui/test_memory_routes_integration.py
+        # 必须用 `python -m pytest`：裸 `pytest` 不会把仓库根目录加入 sys.path，
+        # 会导致所有测试模块在收集阶段就报 `ModuleNotFoundError: No module named 'src'`。
+        run: uv run python -m pytest -q pytests/A_memorix_test pytests/webui/test_memory_routes_integration.py
