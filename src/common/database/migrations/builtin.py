@@ -52,6 +52,7 @@ from .v43_to_v44 import migrate_v43_to_v44
 from .v44_to_v45 import migrate_v44_to_v45
 from .v45_to_v46 import migrate_v45_to_v46
 from .v46_to_v47 import migrate_v46_to_v47
+from .v47_to_v48 import migrate_v47_to_v48
 from .version_store import SQLiteUserVersionStore
 
 EMPTY_SCHEMA_VERSION = 0
@@ -102,7 +103,8 @@ V44_SCHEMA_VERSION = 44
 V45_SCHEMA_VERSION = 45
 V46_SCHEMA_VERSION = 46
 V47_SCHEMA_VERSION = 47
-LATEST_SCHEMA_VERSION = 47
+V48_SCHEMA_VERSION = 48
+LATEST_SCHEMA_VERSION = 48
 
 _LEGACY_V1_EXCLUSIVE_TABLES = (
     "chat_streams",
@@ -2022,6 +2024,13 @@ def build_default_migration_registry() -> MigrationRegistry:
                 name="v46_to_v47",
                 description="新增可审计、可恢复的记忆链接、复制与发布工作流。",
                 handler=migrate_v46_to_v47,
+            ),
+            MigrationStep(
+                version_from=V47_SCHEMA_VERSION,
+                version_to=V48_SCHEMA_VERSION,
+                name="v47_to_v48",
+                description="记忆访问审计补齐 security_domain、policy_revision 与 decision_reason。",
+                handler=migrate_v47_to_v48,
             ),
         ]
     )

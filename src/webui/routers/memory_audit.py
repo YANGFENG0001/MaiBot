@@ -57,6 +57,9 @@ class MemoryAccessAuditItem(BaseModel):
     active_bot_profile_id: str
     permission_group_id: str
     access_mode: str
+    security_domain: str
+    policy_revision: int
+    decision_reason: str
     query_hash: str
     requested_scope: dict[str, Any]
     allowed_scope: dict[str, Any]
@@ -191,6 +194,9 @@ async def list_memory_access_audit(
                 active_bot_profile_id=row.active_bot_profile_id,
                 permission_group_id=row.permission_group_id,
                 access_mode=row.access_mode,
+                security_domain=row.security_domain,
+                policy_revision=row.policy_revision,
+                decision_reason=row.decision_reason,
                 query_hash=_mask_hash(row.query_hash, reveal),
                 requested_scope=_load_json(row.requested_scope_json) if reveal else {},
                 allowed_scope=_load_json(row.allowed_scope_json) if reveal else {},

@@ -235,6 +235,9 @@ export function AuditPanel() {
                 <Badge variant={row.access_mode === 'forced_kami' ? 'destructive' : 'outline'}>
                   {row.access_mode}
                 </Badge>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  {row.security_domain}
+                </Badge>
                 <span className="text-muted-foreground">{new Date(row.created_at).toLocaleString()}</span>
                 <span className="font-mono text-[10px] text-muted-foreground">
                   {t('workspaceAdmin.audit.queryHash')}: {row.query_hash}
@@ -247,6 +250,38 @@ export function AuditPanel() {
               <div className="mt-1 truncate text-muted-foreground">
                 {row.person_id} · {row.session_id} · {row.permission_group_id || t('workspaceAdmin.common.none')}
               </div>
+              <div className="mt-1 grid gap-0.5 font-mono text-[10px] text-muted-foreground">
+                <div className="truncate">
+                  {t('workspaceAdmin.audit.workspaceId')}: {row.workspace_id || t('workspaceAdmin.common.none')}
+                </div>
+                <div className="truncate">
+                  {t('workspaceAdmin.audit.botProfileId')}: {row.active_bot_profile_id || t('workspaceAdmin.common.none')}
+                </div>
+                <div className="truncate">
+                  {t('workspaceAdmin.audit.traceId')}: {row.trace_id || t('workspaceAdmin.common.none')}
+                </div>
+                <div className="truncate">
+                  {t('workspaceAdmin.audit.policyRevision')}: {row.policy_revision}
+                </div>
+                <div className="truncate">
+                  {t('workspaceAdmin.audit.decisionReason')}: {row.decision_reason || t('workspaceAdmin.common.none')}
+                </div>
+              </div>
+              {reveal && (
+                <div className="mt-2 space-y-2">
+                  <ScopeList
+                    label={t('workspaceAdmin.audit.allowedScope')}
+                    values={[
+                      ...(row.allowed_scope.space_ids ?? []),
+                      ...(row.allowed_scope.partition_ids ?? []),
+                    ]}
+                  />
+                  <ScopeList
+                    label={t('workspaceAdmin.audit.writableScope')}
+                    values={row.allowed_scope.writable_partition_ids ?? []}
+                  />
+                </div>
+              )}
             </div>
           ))}
           {!accessAuditQuery.data?.data.length && (

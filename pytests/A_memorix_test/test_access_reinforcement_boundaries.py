@@ -151,8 +151,9 @@ async def test_shared_chat_scope_executes_once_and_reinforces_only_final_results
         self: MemorySearchHitProcessingService,
         chat_id: str,
         shared_chat_ids: tuple[str, ...],
+        **kwargs: Any,
     ) -> RetrievalScope:
-        del self
+        del self, kwargs
         assert chat_id == "session-0"
         assert set(shared_chat_ids) == {f"session-{index}" for index in range(1, 10)}
         return RetrievalScope(
@@ -300,8 +301,9 @@ async def test_person_visibility_and_type_filtered_hits_are_not_reinforced(
         self: MemorySearchHitProcessingService,
         chat_id: str,
         shared_chat_ids: tuple[str, ...],
+        **kwargs: Any,
     ) -> RetrievalScope:
-        del self, chat_id, shared_chat_ids
+        del self, chat_id, shared_chat_ids, kwargs
         return scope
 
     async def fake_search_execution_for_chat_scope(**kwargs: Any) -> SimpleNamespace:

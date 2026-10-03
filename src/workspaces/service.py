@@ -569,6 +569,7 @@ class WorkspaceService:
             writable_partition_ids=decision.writable_partition_ids,
             audience_type=audience_type,
             policy_revision=policy_revision,
+            decision_reason=decision.decision_reason,
         )
 
     def build_bot_request_context(
@@ -629,6 +630,7 @@ class WorkspaceService:
             writable_partition_ids=decision.writable_partition_ids,
             audience_type=audience_type,
             policy_revision=policy_revision + decision.policy_revision,
+            decision_reason=decision.decision_reason,
         )
 
     def resolve_context(

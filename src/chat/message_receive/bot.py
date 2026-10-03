@@ -321,7 +321,9 @@ class ChatBot:
             return f"Kami 管理模式已激活，剩余 {result.active.remaining_seconds} 秒。"
         if result.result == "success" and reason == "kami.already_active" and result.active is not None:
             return f"Kami 管理模式已处于激活状态，剩余 {result.active.remaining_seconds} 秒。"
-        if result.result == "success" and reason == "kami.group_confirm_required":
+        # 群聊挑战按设计返回 denied + needs_confirm（未确认前不落库），
+        # 因此不能要求 result == "success"，否则确认提示永远不会下发。
+        if reason == "kami.group_confirm_required":
             return "群聊启用 Kami 管理模式风险较高，请在 30 秒内发送 /kami confirm 确认。"
         if result.result == "success" and reason == "kami.exited":
             return "已退出 Kami 管理模式，恢复普通 Bot 路由。"

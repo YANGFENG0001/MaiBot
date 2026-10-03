@@ -63,6 +63,7 @@ class MemoryAccessDecision:
     allow_group_disclosure: bool = False
     capabilities: frozenset[str] = frozenset()
     policy_revision: int = 0
+    decision_reason: str = ""
 
     def has_capability(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -100,6 +101,8 @@ class AccessResolver:
         spaces = self._resolve_spaces(session, group, rules, home_space_id, capabilities)
         spaces = self._apply_bidirectional_acl(session, spaces, home_space_id, bot_profile_id)
         partitions = self._partitions(session, spaces, security_domain="normal")
+        candidate_partitions = partitions
+        disclosure = bool(context and context.allow_group_disclosure)
         partitions = self._resolve_partitions(
             session,
             group=group,
@@ -110,7 +113,20 @@ class AccessResolver:
             person_id=person_id,
             capabilities=capabilities,
             audience_type=audience_type,
-            allow_group_disclosure=bool(context and context.allow_group_disclosure),
+            allow_group_disclosure=disclosure,
+        )
+        decision_reason = self._resolve_decision_reason(
+            session,
+            group=group,
+            rules=rules,
+            candidate_partitions=candidate_partitions,
+            partitions=partitions,
+            home_space_id=home_space_id,
+            session_id=session_id,
+            person_id=person_id,
+            capabilities=capabilities,
+            audience_type=audience_type,
+            allow_group_disclosure=disclosure,
         )
         writable_candidates = {
             build_partition_id(home_space_id, "shared", "shared", "normal"),
@@ -125,10 +141,61 @@ class AccessResolver:
             readable_space_ids=spaces,
             readable_partition_ids=partitions,
             writable_partition_ids=writable,
-            allow_group_disclosure=bool(context and context.allow_group_disclosure),
+            allow_group_disclosure=disclosure,
             capabilities=capabilities,
             policy_revision=group.policy_revision if group else 0,
+            decision_reason=decision_reason,
         )
+
+    def _resolve_decision_reason(
+        self,
+        session: Session,
+        *,
+        group: Optional[MemoryPermissionGroup],
+        rules: tuple[MemoryPermissionRule, ...],
+        candidate_partitions: tuple[str, ...],
+        partitions: tuple[str, ...],
+        home_space_id: str,
+        session_id: str,
+        person_id: str,
+        capabilities: frozenset[str],
+        audience_type: str,
+        allow_group_disclosure: bool,
+    ) -> str:
+        """给出可审计的决策原因，解释群聊披露是否拦下了他人记忆。
+
+        只有「群聊受众 + 未开启披露」这一组合才可能因为披露门禁而丢分区，因此仅在
+        该组合下重算一次「若放开披露会得到什么范围」。两次结果有差集即说明披露门禁
+        确实拒绝了他人 person/conversation 记忆；无差集则只是本来就没有这类记忆。
+        放开披露后的原因由 ``group.disclosure.allowed`` 表达。
+        """
+
+        if audience_type != "group":
+            return "scope.resolved"
+        if not allow_group_disclosure:
+            partitions_open = self._resolve_partitions(
+                session,
+                group=group,
+                rules=rules,
+                partitions=candidate_partitions,
+                home_space_id=home_space_id,
+                session_id=session_id,
+                person_id=person_id,
+                capabilities=capabilities,
+                audience_type=audience_type,
+                allow_group_disclosure=True,
+            )
+            if set(partitions_open) - set(partitions):
+                return "group.disclosure.denied"
+            return "scope.resolved"
+        rows = session.exec(select(MemoryPartition).where(col(MemoryPartition.id).in_(partitions))).all()
+        if any(
+            row.partition_type == "person" and row.partition_key != person_id
+            or row.partition_type == "conversation" and row.partition_key != session_id
+            for row in rows
+        ):
+            return "group.disclosure.allowed"
+        return "scope.resolved"
 
     def describe_selection(
         self,
@@ -207,6 +274,7 @@ class AccessResolver:
             bool(context and context.allow_group_disclosure),
             capabilities,
             group.policy_revision,
+            "kami.forced",
         )
 
     @staticmethod

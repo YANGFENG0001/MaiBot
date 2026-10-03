@@ -97,6 +97,23 @@ def test_coerce_metadata_dict_ignores_non_mapping_metadata():
     assert coerce_metadata_dict({"kind": "chat_summary"}) == {"kind": "chat_summary"}
 
 
+def test_coerce_metadata_dict_parses_json_object_string():
+    """metadata 在 SQLite 中是 JSON 文本列，检索期读到的是字符串而非字典。
+
+    若不解析，按 metadata 判定的聊天流范围会把所有段落判为未知范围并丢弃，
+    表现为「写入成功但检索恒为空」。
+    """
+    assert coerce_metadata_dict('{"chat_id": "stream-1"}') == {"chat_id": "stream-1"}
+    assert coerce_metadata_dict(b'{"chat_id": "stream-1"}') == {"chat_id": "stream-1"}
+
+
+def test_coerce_metadata_dict_rejects_json_non_object_string():
+    assert coerce_metadata_dict('["not", "a", "dict"]') == {}
+    assert coerce_metadata_dict("not json at all") == {}
+    assert coerce_metadata_dict("") == {}
+    assert coerce_metadata_dict(None) == {}
+
+
 @pytest.mark.asyncio
 async def test_search_execution_does_not_require_enable_ppr_config():
     class FakeRetriever:

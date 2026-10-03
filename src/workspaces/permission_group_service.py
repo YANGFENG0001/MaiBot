@@ -8,10 +8,11 @@ from typing import Any, Iterable, Optional
 import json
 import uuid
 
-from sqlmodel import col, select
+from sqlmodel import col, delete, select
 
 from src.common.database.database import get_db_session
 from src.common.database.database_model import (
+    KamiSessionState,
     MemoryPermissionGroup,
     MemoryPermissionGroupCapability,
     MemoryPermissionGroupContext,
@@ -123,7 +124,16 @@ class PermissionGroupService:
             return group
 
     def delete_group(self, group_id: str) -> bool:
-        """删除权限组及其全部子资源，避免留下可命中的旧缓存。"""
+        """删除权限组及其全部子资源，避免留下可命中的旧缓存。
+
+        子表必须用独立 DELETE 语句逐张清空：这些模型没有配置 ``relationship()``，
+        ORM 的 ``session.delete()`` 无法推导父子落库顺序，实测会在同一事务里先删父表
+        并直接命中 ``FOREIGN KEY constraint failed``。
+
+        ``kami_session_states.permission_group_id`` 也指向权限组，且该列非空，因此
+        删除权限组时必须同时终止引用它的 Kami 会话（权限组是 Kami 的授权来源，
+        组没了会话就不该继续存在），否则同样会外键失败。
+        """
 
         with get_db_session() as session:
             group = session.get(MemoryPermissionGroup, group_id)
@@ -136,11 +146,11 @@ class PermissionGroupService:
                 MemoryPermissionRule,
                 PermissionGroupBotRule,
             ):
-                for row in session.exec(
-                    select(model).where(model.permission_group_id == group_id)
-                ).all():
-                    session.delete(row)
-            session.delete(group)
+                session.exec(delete(model).where(col(model.permission_group_id) == group_id))
+            session.exec(
+                delete(KamiSessionState).where(col(KamiSessionState.permission_group_id) == group_id)
+            )
+            session.exec(delete(MemoryPermissionGroup).where(col(MemoryPermissionGroup.id) == group_id))
             return True
 
     @staticmethod

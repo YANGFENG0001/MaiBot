@@ -2086,8 +2086,17 @@ class MetadataSchemaMixin:
         self._create_performance_indexes()
         self._conn.commit()
 
-    def _ensure_memory_scope_tables(self, cursor: sqlite3.Cursor) -> None:
-        """为 A-Memorix 对象建立 partition 级成员和关系状态索引。"""
+    def _ensure_memory_scope_tables(self, cursor: sqlite3.Cursor, *, backfill: bool = True) -> None:
+        """为 A-Memorix 对象建立 partition 级成员和关系状态索引。
+
+        Args:
+            cursor: 目标 SQLite 游标。
+            backfill: 是否执行 legacy 作用域回填。写入路径（``register_scope_member``）
+                必须传 ``False``：回填把"尚无成员行"的对象一律当作历史遗留数据补一条
+                ``memory-space-public`` 默认成员行，而写入路径在插入真实成员行之前就会
+                调用本方法，于是刚写入的对象会被提前补上幻影成员行，导致受限安全域
+                （如 Kami）的对象同时出现在 normal 域的 ``memory-space-public`` 下。
+        """
         cursor.execute("""CREATE TABLE IF NOT EXISTS memory_scope_members (
             object_type TEXT NOT NULL, object_id TEXT NOT NULL,
             memory_space_id TEXT NOT NULL, partition_id TEXT NOT NULL,
@@ -2127,16 +2136,46 @@ class MetadataSchemaMixin:
             cursor.execute("ALTER TABLE person_profile_snapshots ADD COLUMN partition_id TEXT NOT NULL DEFAULT 'memory-space-public:shared:normal'")
         cursor.execute("""CREATE INDEX IF NOT EXISTS idx_person_profile_scope
             ON person_profile_snapshots(partition_id, person_id, profile_version DESC)""")
+        if not backfill:
+            return
+
+        # 修复早期版本留下的幻影登记：受限安全域（Kami）对象在写入时被 legacy 回填
+        # 抢先登记成 memory-space-public，于是同一对象同时拥有 normal 域成员行，
+        # 按 memory_space_id 解析候选时就会跨空间泄漏。
+        #
+        # 真实分区 ID 一律由 build_partition_id 生成（"memory-partition-<sha256[:32]>"），
+        # 而回填写入的 partition_id 只是裸的分区类型名。因此"partition_id 是裸类型名，
+        # 且同一对象已存在非裸类型的真实成员行"即可安全判定为幻影行；没有真实成员行的
+        # 对象不动（它们的回填行就是唯一登记，删掉反而会让对象失去作用域）。
+        cursor.execute("""DELETE FROM memory_scope_members
+            WHERE partition_id IN ('shared', 'conversation', 'person')
+              AND EXISTS (
+                  SELECT 1 FROM memory_scope_members AS real_member
+                  WHERE real_member.object_type = memory_scope_members.object_type
+                    AND real_member.object_id = memory_scope_members.object_id
+                    AND real_member.partition_id NOT IN ('shared', 'conversation', 'person')
+              )""")
+
         now = datetime.now().timestamp()
+        # 只回填"完全没有成员行"的对象：否则会把已由 register_scope_member 正确登记
+        # 的对象再补一条 memory-space-public 默认行（重复登记，且安全域错误）。
         cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
             (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
             SELECT 'paragraph', hash, 'memory-space-public',
             CASE WHEN source IS NULL OR source = '' THEN 'shared' ELSE 'conversation' END,
-            'normal', COALESCE(created_at, ?) FROM paragraphs""", (now,))
+            'normal', COALESCE(created_at, ?) FROM paragraphs AS paragraph
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memory_scope_members AS existing
+                WHERE existing.object_type = 'paragraph' AND existing.object_id = paragraph.hash
+            )""", (now,))
         cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
             (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
             SELECT 'relation', hash, 'memory-space-public', 'shared', 'normal',
-            COALESCE(created_at, ?) FROM relations""", (now,))
+            COALESCE(created_at, ?) FROM relations AS relation
+            WHERE NOT EXISTS (
+                SELECT 1 FROM memory_scope_members AS existing
+                WHERE existing.object_type = 'relation' AND existing.object_id = relation.hash
+            )""", (now,))
 
     def _create_temporal_indexes_if_ready(self) -> None:
         """

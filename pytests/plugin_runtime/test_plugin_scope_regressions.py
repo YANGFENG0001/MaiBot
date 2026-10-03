@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.common.database.migrations.builtin import LATEST_SCHEMA_VERSION, V47_SCHEMA_VERSION
+from src.common.database.migrations.builtin import (
+    LATEST_SCHEMA_VERSION,
+    V47_SCHEMA_VERSION,
+    V48_SCHEMA_VERSION,
+)
 from src.core.tooling import ToolExecutionResult, ToolInvocation, ToolRegistry, ToolSpec
 from src.platform_io.types import DeliveryBatch, DeliveryReceipt, DeliveryStatus, DriverKind, RouteKey
 from src.plugin_runtime.host.circuit_breaker import PluginCircuitBreaker
@@ -242,4 +246,5 @@ async def test_rg04_builtin_tool_still_obeys_current_bot_profile_policy(monkeypa
 
 
 def test_rg08_schema_advances_to_v47_for_memory_transfer() -> None:
-    assert LATEST_SCHEMA_VERSION == V47_SCHEMA_VERSION == 47
+    assert V47_SCHEMA_VERSION == 47
+    assert LATEST_SCHEMA_VERSION == V48_SCHEMA_VERSION == 48

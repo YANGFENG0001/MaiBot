@@ -9,7 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel
 
 from src.common.database import database_model as _database_model  # noqa: F401
-from src.common.database.migrations.builtin import LATEST_SCHEMA_VERSION, V47_SCHEMA_VERSION
+from src.common.database.migrations.builtin import (
+    LATEST_SCHEMA_VERSION,
+    V47_SCHEMA_VERSION,
+    V48_SCHEMA_VERSION,
+)
 from src.common.database.migrations.models import MigrationExecutionContext
 from src.common.database.migrations.v46_to_v47 import migrate_v46_to_v47
 
@@ -54,7 +58,8 @@ def _legacy_schema(connection: Connection) -> None:
 
 def test_m01_m02_m03_m04_schema_version_and_lossless_rerun() -> None:
     assert V47_SCHEMA_VERSION == 47
-    assert LATEST_SCHEMA_VERSION == 47
+    assert V48_SCHEMA_VERSION == 48
+    assert LATEST_SCHEMA_VERSION == 48
     engine = create_engine("sqlite://")
     with engine.begin() as connection:
         _legacy_schema(connection)
