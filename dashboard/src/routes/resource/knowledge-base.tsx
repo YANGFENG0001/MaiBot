@@ -42,7 +42,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ThinkingIllustration } from '@/components/ui/thinking-illustration'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
-import { getWorkspaces } from '@/lib/workspaces-api'
+import { getMemorySpacePartitions, getWorkspaces } from '@/lib/workspaces-api'
 import {
   getMemoryImportChatTargets,
   type MemoryImportChatTargetPayload,
@@ -457,13 +457,45 @@ export function KnowledgeBasePage() {
       || window.localStorage.getItem('memory-console-space-id')
       || ''
   })
+  // 分区筛选与记忆空间筛选一致：切换时整页跳转，因此这里只读取初始值。
+  const [selectedPartitionIds] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('partition_ids')
+      || window.localStorage.getItem('memory-console-partition-ids')
+      || ''
+  })
   const switchMemorySpace = useCallback((memorySpaceId: string) => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('memory-console-space-id', memorySpaceId)
+    // 切换记忆空间后原分区归属失效，必须同时清空分区筛选。
+    window.localStorage.removeItem('memory-console-partition-ids')
     const params = new URLSearchParams(window.location.search)
     params.set('memory_space_id', memorySpaceId)
+    params.delete('partition_ids')
     window.location.assign(`${window.location.pathname}?${params.toString()}${window.location.hash}`)
   }, [])
+  const switchPartitionScope = useCallback((partitionIds: string) => {
+    if (typeof window === 'undefined') return
+    if (partitionIds) {
+      window.localStorage.setItem('memory-console-partition-ids', partitionIds)
+    } else {
+      window.localStorage.removeItem('memory-console-partition-ids')
+    }
+    const params = new URLSearchParams(window.location.search)
+    if (partitionIds) {
+      params.set('partition_ids', partitionIds)
+    } else {
+      params.delete('partition_ids')
+    }
+    window.location.assign(`${window.location.pathname}?${params.toString()}${window.location.hash}`)
+  }, [])
+  const activeMemorySpaceId = selectedMemorySpaceId || workspaceQuery.data?.memory_spaces[0]?.id || ''
+  // 分区筛选必须真实传给后端；这里只负责选择，不复制任何权限算法。
+  const partitionQuery = useQuery({
+    queryKey: ['memory-space-partitions', activeMemorySpaceId],
+    queryFn: () => getMemorySpacePartitions(activeMemorySpaceId),
+    enabled: Boolean(activeMemorySpaceId),
+  })
   const [quickStartVisible, setQuickStartVisible] = useState(() => {
     if (typeof window === 'undefined') {
       return true
@@ -829,6 +861,23 @@ export function KnowledgeBasePage() {
                       {(workspaceQuery.data?.memory_spaces ?? []).map((space) => (
                         <SelectItem key={space.id} value={space.id}>
                           {space.name}{space.space_type === 'public' ? ' · 公共' : ' · 独立'}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Label className="ml-2 text-xs text-muted-foreground">分区</Label>
+                  <Select
+                    value={selectedPartitionIds || '__all__'}
+                    onValueChange={(value) => switchPartitionScope(value === '__all__' ? '' : value)}
+                  >
+                    <SelectTrigger className="h-7 min-w-[190px] text-xs">
+                      <SelectValue placeholder="全部分区" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__">全部分区（按权限范围）</SelectItem>
+                      {(partitionQuery.data?.data ?? []).map((partition) => (
+                        <SelectItem key={partition.id} value={partition.id}>
+                          {partition.partition_type} · {partition.partition_key} · {partition.object_count} 个对象
                         </SelectItem>
                       ))}
                     </SelectContent>

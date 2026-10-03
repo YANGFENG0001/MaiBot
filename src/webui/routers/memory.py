@@ -1739,7 +1739,9 @@ async def _query_aggregate(
     time_start: float | None,
     time_end: float | None,
     memory_space_id: str = "",
+    partition_ids: str = "",
 ) -> dict:
+    requested_partition_ids = [item.strip() for item in str(partition_ids or "").split(",") if item.strip()]
     result: MemorySearchResult = await memory_service.search(
         query,
         limit=limit,
@@ -1750,6 +1752,7 @@ async def _query_aggregate(
         time_end=time_end,
         respect_filter=False,
         memory_space_id=memory_space_id,
+        partition_ids=requested_partition_ids,
     )
     return {"success": True, **result.to_dict()}
 
@@ -2531,6 +2534,7 @@ async def query_memory_aggregate(
     time_start: float | None = Query(None),
     time_end: float | None = Query(None),
     memory_space_id: str = Query(""),
+    partition_ids: str = Query(""),
 ):
     return await _query_aggregate(
         query,
@@ -2540,6 +2544,7 @@ async def query_memory_aggregate(
         time_start=time_start,
         time_end=time_end,
         memory_space_id=memory_space_id,
+        partition_ids=partition_ids,
     )
 
 

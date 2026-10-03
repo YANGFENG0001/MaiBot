@@ -130,6 +130,22 @@ class AccessResolver:
             policy_revision=group.policy_revision if group else 0,
         )
 
+    def describe_selection(
+        self,
+        session: Session,
+        *,
+        person_id: str,
+        session_id: str,
+        workspace_id: str,
+        audience_type: str,
+    ) -> tuple[Optional[MemoryPermissionGroup], Optional[MemoryPermissionGroupContext]]:
+        """返回命中的权限组及其上下文，供管理端模拟器解释匹配原因。
+
+        这里复用运行期同一套选择逻辑，前端和模拟器都不得复制该算法。
+        """
+
+        return self._select_group(session, person_id, session_id, workspace_id, audience_type)
+
     @staticmethod
     def validate_rule_conflicts(rules: Iterable[MemoryPermissionRule]) -> None:
         """拒绝同一 specificity/priority 下结果不确定的 allow/deny 规则。"""

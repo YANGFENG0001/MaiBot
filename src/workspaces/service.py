@@ -15,7 +15,9 @@ from src.common.database.database_model import (
     BotProfileToolPolicy,
     BotRouteState,
     ChatSession,
+    MemoryObjectPartition,
     MemoryObjectSpace,
+    MemoryPartition,
     MemorySpace,
     MemorySpaceACL,
     MemorySpaceMigrationState,
@@ -716,6 +718,7 @@ class WorkspaceService:
         name: str,
         description: str = "",
         space_type: str = "private",
+        strict_isolation: bool = False,
     ) -> MemorySpace:
         normalized_name = name.strip()
         if not normalized_name:
@@ -731,6 +734,7 @@ class WorkspaceService:
                 name=normalized_name,
                 description=description.strip(),
                 space_type=space_type,
+                strict_isolation=strict_isolation,
                 enabled=True,
                 created_at=now,
                 updated_at=now,
@@ -760,11 +764,39 @@ class WorkspaceService:
                 space.description = str(changes["description"] or "").strip()
             if "enabled" in changes:
                 space.enabled = bool(changes["enabled"])
+            if "strict_isolation" in changes:
+                space.strict_isolation = bool(changes["strict_isolation"])
             space.policy_revision += 1
             space.updated_at = datetime.now()
             session.add(space)
             session.flush()
             return space
+
+    def list_memory_partitions(self, memory_space_id: str) -> list[MemoryPartition]:
+        """列出记忆空间下的全部分区，供管理端展示 shared/person/conversation 结构。"""
+
+        with get_db_session() as session:
+            return list(
+                session.exec(
+                    select(MemoryPartition)
+                    .where(MemoryPartition.memory_space_id == memory_space_id)
+                    .order_by(MemoryPartition.partition_type, MemoryPartition.partition_key)
+                ).all()
+            )
+
+    def count_partition_objects(self, partition_ids: Iterable[str]) -> dict[str, int]:
+        """统计每个分区下的记忆对象数量，用于展示导入/发布规模。"""
+
+        ids = [item for item in partition_ids if item]
+        if not ids:
+            return {}
+        with get_db_session() as session:
+            rows = session.exec(
+                select(MemoryObjectPartition.partition_id, func.count())
+                .where(col(MemoryObjectPartition.partition_id).in_(ids))
+                .group_by(MemoryObjectPartition.partition_id)
+            ).all()
+        return {str(partition_id): int(count) for partition_id, count in rows}
 
     def set_memory_space_acl(
         self,

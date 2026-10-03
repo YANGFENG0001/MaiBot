@@ -58,6 +58,7 @@ const expectedPaths = [
   '/data-transfer',
   '/logs',
   '/reasoning-process',
+  '/operations',
   '/planner-monitor',
   '/chat-management',
   '/workspaces',

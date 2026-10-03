@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, List, Optional, Sequence
 
 from src.A_memorix.host_service import a_memorix_host_service
 from src.common.database.migrations.v43_to_v44 import build_partition_id
@@ -315,6 +315,7 @@ class MemoryService:
         user_id: str = "",
         group_id: str = "",
         memory_space_id: str = "",
+        partition_ids: Sequence[str] = (),
     ) -> MemorySearchResult:
         clean_query = str(query or "").strip()
         normalized_time_start = None if time_start in {None, ""} else time_start
@@ -323,6 +324,17 @@ class MemoryService:
             return MemorySearchResult()
         try:
             scope = self._resolve_scope(chat_id, memory_space_id)
+            # 知识库可显式收窄分区范围，但只允许在已授权的可读分区内收窄。
+            normalized_partitions = tuple(
+                dict.fromkeys(str(item).strip() for item in partition_ids if str(item).strip())
+            )
+            if normalized_partitions:
+                unreadable = [
+                    item for item in normalized_partitions if item not in set(scope.readable_partition_ids)
+                ]
+                if unreadable:
+                    raise PermissionError(f"当前请求无权访问指定记忆分区: {', '.join(unreadable)}")
+                scope = replace(scope, readable_partition_ids=normalized_partitions)
             backend_limit = max(1, int(limit))
             search_args = {
                 "query": clean_query,

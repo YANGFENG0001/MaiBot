@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 from sqlmodel import col, select
 
 from src.common.database.database import get_db_session
-from src.common.database.database_model import ChatSession, WorkspaceToolPolicy
+from src.common.database.database_model import (
+    BotProfile,
+    BotProfileMemoryRule,
+    ChatSession,
+    MemorySpaceBotRule,
+    WorkspaceToolPolicy,
+)
 from src.webui.dependencies import require_auth
 from src.workspaces import workspace_service
 
@@ -21,6 +27,7 @@ class MemorySpaceItem(BaseModel):
     description: str
     space_type: str
     enabled: bool
+    strict_isolation: bool
     policy_revision: int
 
 
@@ -28,12 +35,46 @@ class MemorySpaceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
     space_type: str = "private"
+    strict_isolation: bool = False
 
 
 class MemorySpaceUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     description: Optional[str] = Field(default=None, max_length=2000)
     enabled: Optional[bool] = None
+    strict_isolation: Optional[bool] = None
+
+
+class MemoryPartitionItem(BaseModel):
+    id: str
+    partition_type: str
+    partition_key: str
+    security_domain: str
+    display_name: str
+    enabled: bool
+    policy_revision: int
+    object_count: int
+
+
+class MemoryPartitionListResponse(BaseModel):
+    success: bool = True
+    memory_space_id: str
+    memory_space_name: str
+    strict_isolation: bool
+    data: list[MemoryPartitionItem]
+
+
+class BotSpaceAccessItem(BaseModel):
+    bot_profile_id: str
+    bot_profile_name: str
+    profile_type: str
+    outbound_can_read: Optional[bool]
+    inbound_can_read: Optional[bool]
+
+
+class BotSpaceAccessResponse(BaseModel):
+    success: bool = True
+    data: list[BotSpaceAccessItem]
 
 
 class MemorySpaceACLItem(BaseModel):
@@ -240,6 +281,67 @@ async def set_memory_space_acl(
     )
 
 
+@router.get("/memory-spaces/{memory_space_id}/partitions", response_model=MemoryPartitionListResponse)
+async def list_memory_space_partitions(memory_space_id: str) -> MemoryPartitionListResponse:
+    space = workspace_service.get_memory_space(memory_space_id)
+    if space is None:
+        raise HTTPException(status_code=404, detail="记忆空间不存在")
+    partitions = workspace_service.list_memory_partitions(memory_space_id)
+    counts = workspace_service.count_partition_objects([item.id for item in partitions])
+    return MemoryPartitionListResponse(
+        memory_space_id=space.id,
+        memory_space_name=space.name,
+        strict_isolation=space.strict_isolation,
+        data=[
+            MemoryPartitionItem(
+                id=item.id,
+                partition_type=item.partition_type,
+                partition_key=item.partition_key,
+                security_domain=item.security_domain,
+                display_name=item.display_name,
+                enabled=item.enabled,
+                policy_revision=item.policy_revision,
+                object_count=counts.get(item.id, 0),
+            )
+            for item in partitions
+        ],
+    )
+
+
+@router.get("/memory-spaces/{memory_space_id}/bot-access", response_model=BotSpaceAccessResponse)
+async def list_memory_space_bot_access(memory_space_id: str) -> BotSpaceAccessResponse:
+    """展示哪些 BotProfile 可读写该记忆空间：出站规则与空间入站规则都必须允许。"""
+
+    if workspace_service.get_memory_space(memory_space_id) is None:
+        raise HTTPException(status_code=404, detail="记忆空间不存在")
+    with get_db_session() as session:
+        profiles = session.exec(select(BotProfile).order_by(BotProfile.profile_type, BotProfile.name)).all()
+        outbound = {
+            item.bot_profile_id: item.can_read
+            for item in session.exec(
+                select(BotProfileMemoryRule).where(BotProfileMemoryRule.target_space_id == memory_space_id)
+            ).all()
+        }
+        inbound = {
+            item.bot_profile_id: item.can_read
+            for item in session.exec(
+                select(MemorySpaceBotRule).where(MemorySpaceBotRule.memory_space_id == memory_space_id)
+            ).all()
+        }
+    return BotSpaceAccessResponse(
+        data=[
+            BotSpaceAccessItem(
+                bot_profile_id=profile.id,
+                bot_profile_name=profile.name,
+                profile_type=profile.profile_type,
+                outbound_can_read=outbound.get(profile.id),
+                inbound_can_read=inbound.get(profile.id),
+            )
+            for profile in profiles
+        ]
+    )
+
+
 @router.post("/memory-spaces/migrate-legacy")
 async def migrate_legacy_memory_groups() -> dict[str, int | bool]:
     return {"success": True, "assigned_count": workspace_service.migrate_legacy_shared_memory_groups()}
@@ -259,6 +361,7 @@ async def list_workspaces() -> WorkspaceListResponse:
                 description=item.description,
                 space_type=item.space_type,
                 enabled=item.enabled,
+                strict_isolation=item.strict_isolation,
                 policy_revision=item.policy_revision,
             )
             for item in spaces

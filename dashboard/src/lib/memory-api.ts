@@ -21,10 +21,19 @@ function requestJson<T>(path: string, options: MemoryRequestOptions = {}): Promi
     : new URLSearchParams(window.location.search).get('memory_space_id')
       || window.localStorage.getItem('memory-console-space-id')
       || ''
+  const selectedPartitionIds = typeof window === 'undefined'
+    ? ''
+    : new URLSearchParams(window.location.search).get('partition_ids')
+      || window.localStorage.getItem('memory-console-partition-ids')
+      || ''
   let scopedPath = path
   if (selectedSpaceId) {
     const separator = path.includes('?') ? '&' : '?'
     scopedPath = `${path}${separator}memory_space_id=${encodeURIComponent(selectedSpaceId)}`
+  }
+  if (selectedPartitionIds) {
+    const separator = scopedPath.includes('?') ? '&' : '?'
+    scopedPath = `${scopedPath}${separator}partition_ids=${encodeURIComponent(selectedPartitionIds)}`
   }
   let scopedBody = options.body
   if (selectedSpaceId && scopedBody instanceof FormData) {

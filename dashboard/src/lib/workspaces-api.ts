@@ -6,9 +6,37 @@ export interface MemorySpaceItem {
   id: string
   name: string
   description: string
-  space_type: 'public' | 'private' | string
+  space_type: 'public' | 'private' | 'kami' | string
+  enabled: boolean
+  strict_isolation: boolean
+  policy_revision: number
+}
+
+export interface MemoryPartitionItem {
+  id: string
+  partition_type: 'shared' | 'person' | 'conversation' | string
+  partition_key: string
+  security_domain: string
+  display_name: string
   enabled: boolean
   policy_revision: number
+  object_count: number
+}
+
+export interface MemoryPartitionListResponse {
+  success: boolean
+  memory_space_id: string
+  memory_space_name: string
+  strict_isolation: boolean
+  data: MemoryPartitionItem[]
+}
+
+export interface BotSpaceAccessItem {
+  bot_profile_id: string
+  bot_profile_name: string
+  profile_type: string
+  outbound_can_read: boolean | null
+  inbound_can_read: boolean | null
 }
 
 export interface WorkspaceItem {
@@ -104,7 +132,12 @@ export interface MemorySpaceAclItem {
   expose_to_peer: boolean
 }
 
-export async function createMemorySpace(input: { name: string; description: string; space_type: 'public' | 'private' }): Promise<MemorySpaceItem> {
+export async function createMemorySpace(input: {
+  name: string
+  description: string
+  space_type: 'public' | 'private'
+  strict_isolation?: boolean
+}): Promise<MemorySpaceItem> {
   return backendApi.post<MemorySpaceItem>(`${API_BASE}/memory-spaces`, {
     body: input,
     errorMessage: '创建记忆空间失败',
@@ -113,12 +146,27 @@ export async function createMemorySpace(input: { name: string; description: stri
 
 export async function updateMemorySpace(
   memorySpaceId: string,
-  input: Partial<Pick<MemorySpaceItem, 'name' | 'description' | 'enabled'>>,
+  input: Partial<Pick<MemorySpaceItem, 'name' | 'description' | 'enabled' | 'strict_isolation'>>,
 ): Promise<MemorySpaceItem> {
   return backendApi.patch<MemorySpaceItem>(`${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}`, {
     body: input,
     errorMessage: '更新记忆空间失败',
   })
+}
+
+export async function getMemorySpacePartitions(memorySpaceId: string): Promise<MemoryPartitionListResponse> {
+  return backendApi.get<MemoryPartitionListResponse>(
+    `${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}/partitions`,
+    { cache: 'no-store', errorMessage: '读取记忆分区失败' },
+  )
+}
+
+export async function getMemorySpaceBotAccess(memorySpaceId: string): Promise<BotSpaceAccessItem[]> {
+  const response = await backendApi.get<{ success: boolean; data: BotSpaceAccessItem[] }>(
+    `${API_BASE}/memory-spaces/${encodeURIComponent(memorySpaceId)}/bot-access`,
+    { cache: 'no-store', errorMessage: '读取记忆空间 Bot 访问规则失败' },
+  )
+  return response.data
 }
 
 export async function getMemorySpaceAcl(memorySpaceId: string): Promise<MemorySpaceAclItem[]> {

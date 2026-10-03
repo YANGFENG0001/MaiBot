@@ -417,6 +417,58 @@ class KamiService:
             remaining_seconds=active.remaining_seconds,
         )
 
+    def list_session_states(
+        self,
+        *,
+        status_filter: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[KamiSessionState]:
+        """管理端列出 Kami 会话状态；先执行一次旧 boot 批量失效。"""
+
+        self._ensure_old_boot_expired()
+        with get_db_session() as session:
+            query = (
+                select(KamiSessionState)
+                .order_by(col(KamiSessionState.activated_at).desc())
+                .limit(limit)
+            )
+            if status_filter:
+                query = query.where(KamiSessionState.status == status_filter)
+            return list(session.exec(query).all())
+
+    def revoke_session_state(self, state_id: str, *, actor: str) -> bool:
+        """管理端强制撤销某个 Kami 会话，并写不含正文的控制审计。"""
+
+        with get_db_session() as session:
+            row = session.get(KamiSessionState, state_id)
+            if row is None:
+                raise ValueError(f"Kami 会话不存在: {state_id}")
+            session_id, person_id = row.session_id, row.person_id
+        with _key_lock(session_id, person_id):
+            with get_db_session() as session:
+                row = session.get(KamiSessionState, state_id)
+                if row is None:
+                    raise ValueError(f"Kami 会话不存在: {state_id}")
+                if row.status != STATUS_ACTIVE:
+                    return False
+                row.status = STATUS_REVOKED
+                row.revision += 1
+                session.add(row)
+                self._write_control_audit(
+                    session,
+                    session_id=row.session_id,
+                    person_id=row.person_id,
+                    platform="webui",
+                    command=COMMAND_KAMI_OFF,
+                    before_bot_profile_id=row.kami_bot_profile_id,
+                    after_bot_profile_id=row.activated_from_bot_profile_id,
+                    permission_group_id=row.permission_group_id,
+                    result=RESULT_SUCCESS,
+                    reason="admin.revoke",
+                    metadata_json=json.dumps({"actor": actor, "state_id": state_id}, ensure_ascii=False),
+                )
+                return True
+
     def resolve_active(
         self,
         *,

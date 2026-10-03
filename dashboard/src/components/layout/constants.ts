@@ -52,7 +52,7 @@ export const menuSections: MenuSection[] = [
         path: '/',
         searchDescription: 'search.items.homeDesc',
       },
-      { icon: OperationsIcon, label: '运行中心', path: '/operations' },
+      { icon: OperationsIcon, label: 'sidebar.menu.operations', path: '/operations' },
       { icon: MonitorIcon, label: 'sidebar.menu.maisakaMonitor', path: '/planner-monitor' },
       { icon: ChatManagementIcon, label: 'sidebar.menu.chatManagement', path: '/chat-management' },
       { icon: WorkspacesIcon, label: 'sidebar.menu.workspaces', path: '/workspaces' },
