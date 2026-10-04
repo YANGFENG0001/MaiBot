@@ -524,7 +524,11 @@ describe('ImportTab', () => {
     )
     expect(screen.queryByText('公共参数')).not.toBeInTheDocument()
     expect(screen.queryByText('这些设置会应用到当前导入任务。一般保持默认即可，只在批量导入或排查问题时调整。')).not.toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('请选择资料类别')
+    // 上游新增了「已选文件」的 role="status" 区域，页面上不再只有一个 status 节点，
+    // 因此按文案定位校验提示，并同时断言它仍是 status 提示区。
+    expect(
+      screen.getByText('请选择资料类别', { selector: '[role="status"]' })
+    ).toBeInTheDocument()
 
     await user.click(screen.getByRole('combobox', { name: '资料类别' }))
     await user.click(screen.getByRole('option', { name: '事实资料' }))

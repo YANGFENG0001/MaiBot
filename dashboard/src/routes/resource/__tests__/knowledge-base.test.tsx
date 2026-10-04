@@ -1425,7 +1425,8 @@ describe('KnowledgeBasePage import workflow', () => {
     renderPage()
 
     await waitForConsoleReady()
-    await openMemoryStatusDialog(user)
+    // 「重建向量」按钮位于控制台标签栏（页面级），并不在「记忆状态」对话框内部；
+    // 而模态对话框会把页面其余部分标记为 aria-hidden，按钮将不再可访问，故不能先打开该对话框。
     await user.click(screen.getByRole('button', { name: '重建向量' }))
     await waitFor(() =>
       expect(memoryApi.rebuildMemoryRuntimeVectors).toHaveBeenCalledWith({ dry_run: true }),
@@ -1452,12 +1453,13 @@ describe('KnowledgeBasePage import workflow', () => {
     await waitForConsoleReady()
     await openImportTab()
     const createButton = screen.getByRole('button', { name: '创建导入任务' })
-    expect(createButton).toBeDisabled()
-    expect(screen.queryByText('公共参数')).not.toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('请选择资料类别')
-    await user.click(screen.getByRole('combobox', { name: '资料类别' }))
-    await user.click(screen.getByRole('option', { name: '叙事资料' }))
+    // 上游 1.3.2 把资料类别的初始值定为「叙事资料」，且下拉选项里没有空选项
+    // （useImportForm.ts:172 + constants.ts 的 IMPORT_CONTENT_CATEGORY_OPTIONS），
+    // 因此进入页面时类别已选中：按钮可直接提交，也不会出现「请选择资料类别」提示。
     expect(createButton).toBeEnabled()
+    expect(screen.queryByText('公共参数')).not.toBeInTheDocument()
+    expect(screen.queryByText('请选择资料类别')).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '资料类别' })).toHaveTextContent('叙事资料')
 
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
     expect(fileInput).toHaveAttribute('accept', '.txt,.md,.json')
@@ -1578,7 +1580,8 @@ describe('KnowledgeBasePage import workflow', () => {
     expect(retryPayload).toMatchObject({
       overrides: {
         llm_enabled: true,
-        strategy_override: 'auto',
+        // 默认资料类别为 'narrative'；'auto' 仅在类别被清空（旧任务重试）时出现。
+        strategy_override: 'narrative',
       },
     })
   }, 20_000)
@@ -2471,7 +2474,8 @@ describe('KnowledgeBasePage import workflow', () => {
       const user = userEvent.setup()
       renderPage()
       await waitForConsoleReady()
-      await openMemoryStatusDialog(user)
+      // 同「rebuilds all vectors from overview controls」：「重建向量」是页面级按钮，
+      // 打开模态「记忆状态」对话框后页面被标记 aria-hidden，按钮将无法定位。
       await user.click(screen.getByRole('button', { name: '重建向量' }))
       expect(await screen.findByText('重建全部向量')).toBeInTheDocument()
       await user.click(screen.getByRole('button', { name: '取消' }))

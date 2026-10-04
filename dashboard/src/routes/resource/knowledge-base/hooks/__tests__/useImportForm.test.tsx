@@ -130,6 +130,10 @@ describe('useImportForm', () => {
       act(() => {
         result.current.setUnifiedImportMode('text')
         result.current.setPasteContent('要导入的内容')
+        // 上游 1.3.2 把资料类别的初始值定为 'narrative'，且下拉选项里没有空选项
+        // （见 useImportForm.ts:172 与 constants.ts 的 IMPORT_CONTENT_CATEGORY_OPTIONS），
+        // 因此「未选择类别」只能通过显式清空来构造。
+        result.current.setImportContentCategory('')
       })
       expect(result.current.importContentCategoryMissing).toBe(true)
 
@@ -176,6 +180,8 @@ describe('useImportForm', () => {
 
     it('未选择类别时保留 auto 载荷供旧任务重试', () => {
       const { result } = renderForm()
+      // 'auto' 兜底分支只在类别被清空时命中（初始值已是 'narrative'），故显式清空。
+      act(() => result.current.setImportContentCategory(''))
       expect(result.current.buildCommonImportPayload()).toMatchObject({
         strategy_override: 'auto',
         chat_log: false,
@@ -253,7 +259,11 @@ describe('useImportForm 模式切换校验', () => {
     } as never)
     const { result, onCreated } = renderForm()
 
-    act(() => result.current.setUnifiedImportMode('text'))
+    act(() => {
+      result.current.setUnifiedImportMode('text')
+      // 同「未选择资料类别时不创建任务」：初始值已是 'narrative'，需显式清空才能命中拦截分支。
+      result.current.setImportContentCategory('')
+    })
     expect(result.current.importContentCategoryMissing).toBe(true)
     await act(async () => {
       await result.current.submitImportByMode()
@@ -679,7 +689,8 @@ describe('useImportForm 空 counts 与默认值', () => {
     })
     expect(result.current.buildCommonImportPayload()).toEqual({
       llm_enabled: true,
-      strategy_override: 'auto',
+      // 默认资料类别是 'narrative'（useImportForm.ts:172）；'auto' 只在类别被清空时出现。
+      strategy_override: 'narrative',
       chat_log: false,
       scope_type: 'global',
       dedupe_policy: 'content_hash',

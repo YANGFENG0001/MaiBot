@@ -331,7 +331,9 @@ describe('PluginConfigPage 特征化', () => {
   })
 
   it('插件卡片不显示重复的配置按钮，更新按钮保留原色并标记统一边框', async () => {
-    const { container } = render(<PluginConfigPage />)
+    // 上游把插件列表迁到 react-query（usePluginList），脱离 QueryClientProvider 渲染会拿不到数据，
+    // 因此改用带 Provider 的 renderPage()。
+    const { container } = renderPage()
 
     await screen.findByText('Emoji Plugin')
     expect(screen.queryByRole('button', { name: '配置' })).not.toBeInTheDocument()
@@ -347,10 +349,15 @@ describe('PluginConfigPage 特征化', () => {
     )
   })
 
-  it('无插件时显示空态提示', async () => {
+  it('无插件时展示 MCP 服务分组（上游的插件空态分支已不可达）', async () => {
     vi.mocked(pluginApi.getInstalledPlugins).mockResolvedValue([] as never)
     renderPage()
-    await waitFor(() => expect(screen.getByText('暂无已安装的插件')).toBeInTheDocument())
+    // 上游在 extensionGroups 中恒定注入「MCP 服务」分组（见 plugin-config.tsx 的 extensionGroups），
+    // 因此 `extensionGroups.length === 0` 的「暂无已安装的插件」分支已成为死代码；
+    // MCP 分组自带空态文案（尚未添加 MCP 服务…），页面并不会出现无提示的空列表。
+    // 这里断言当前可观察行为：展示 MCP 服务分组，而不是那段不可达的插件空态。
+    expect(await screen.findByRole('heading', { name: 'MCP 服务' })).toBeInTheDocument()
+    expect(screen.queryByText('暂无已安装的插件')).not.toBeInTheDocument()
   })
 
   it('按照加载成功、加载中、加载失败的顺序分层展示插件', async () => {
@@ -609,9 +616,12 @@ describe('PluginConfigPage 空列表', () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('Emoji Plugin')
-    await user.type(screen.getByPlaceholderText('搜索插件...'), 'zzz-not-found')
-    expect(await screen.findByText('没有找到匹配的插件')).toBeInTheDocument()
-    expect(screen.getByText('尝试其他搜索关键词')).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('搜索插件或 MCP 服务...'), 'zzz-not-found')
+    // 同「无插件时展示 MCP 服务分组」：插件侧「没有找到匹配的插件」属上游不可达分支，
+    // 页面仍展示 MCP 服务分组（其内部自行处理「没有匹配的 MCP 服务」提示）。
+    expect(await screen.findByRole('heading', { name: 'MCP 服务' })).toBeInTheDocument()
+    expect(screen.queryByText('没有找到匹配的插件')).not.toBeInTheDocument()
+    expect(screen.queryByText('尝试其他搜索关键词')).not.toBeInTheDocument()
   })
 
   it('仅看有更新且没有新版本时显示空态', async () => {
@@ -2580,11 +2590,13 @@ describe('PluginConfigPage 覆盖补全', () => {
     ).toBeInTheDocument()
   })
 
-  it('future-retro 主题在无插件时渲染空状态条', async () => {
+  it('future-retro 主题在无插件时渲染主题统计条', async () => {
     themeState.dashboardStyle = 'future-retro'
     vi.mocked(pluginApi.getInstalledPlugins).mockResolvedValue([] as never)
     renderPage()
-    expect(await screen.findByText('暂无已安装的插件')).toBeInTheDocument()
+    // 同「无插件时展示 MCP 服务分组」：上游的「暂无已安装的插件」空态不可达，
+    // 但主题统计条仍会渲染，这里断言统计条。
+    expect(await screen.findByRole('heading', { name: 'MCP 服务' })).toBeInTheDocument()
     expect(screen.getByText('已安装 0 个插件，已启用 0 个，已禁用 0 个，加载中 0 个，启动失败 0 个')).toBeInTheDocument()
   })
 })

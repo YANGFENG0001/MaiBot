@@ -65,6 +65,10 @@ vi.mock('@/routes/plugin-mirrors-embed', () => ({ PluginMirrorsEmbedPage: StubPa
 vi.mock('@/routes/plugin-mirrors', () => ({ PluginMirrorsPage: StubPage }))
 vi.mock('@/routes/mcp-settings', () => ({ MCPSettingsPage: StubPage }))
 vi.mock('@/routes/data-transfer', () => ({ DataTransferPage: StubPage }))
+// 本项目自有路由（上游没有这两个页面），上游重写测试时未纳入桩列表：
+// /operations 内部使用 <Link>，脱离 Router 上下文渲染会抛错，故一并打桩。
+vi.mock('@/routes/operations', () => ({ OperationsPage: StubPage }))
+vi.mock('@/routes/workspaces', () => ({ WorkspacesPage: StubPage }))
 vi.mock('@/routes/settings/index.tsx', () => ({ SettingsPage: StubPage }))
 vi.mock('@/routes/config/pack-market', () => ({ default: StubPage }))
 vi.mock('@/routes/config/pack-detail', () => ({ default: StubPage }))
@@ -72,6 +76,9 @@ vi.mock('@/routes/survey/webui-feedback', () => ({ WebUIFeedbackSurveyPage: Stub
 vi.mock('@/routes/survey/maibot-feedback', () => ({ MaiBotFeedbackSurveyPage: StubPage }))
 
 // 期望注册的全部页面路径（不含 root 与通配 404）
+// 说明：/mcp-settings、/settings 由其他路由承载；/extensions 是纯重定向路由
+// （上游 1.3.2 新增，beforeLoad 直接 redirect 到 /plugin-config#webui-extensions，没有 component），
+// 因此下方「每个路径都必须有懒加载组件」的断言需排除这三条路径。
 const expectedPaths = [
   '/auth',
   '/setup',
@@ -189,7 +196,7 @@ describe('router 路由表', () => {
       string,
       { options: { component?: unknown } } | undefined
     >
-    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings'].includes(path))) {
+    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings', '/extensions'].includes(path))) {
       const route = routesByPath[path]
       expect(route, `routesByPath 缺少 ${path}`).toBeDefined()
       expect(typeof route?.options.component, `${path} 缺少组件`).toBe('function')
@@ -324,7 +331,7 @@ describe('router 路由表', () => {
 
   it('所有懒加载页面工厂均可 preload 到桩组件', async () => {
     const routesByPath = getRoutesByPath()
-    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings'].includes(path))) {
+    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings', '/extensions'].includes(path))) {
       const component = routesByPath[path]?.options.component as LazyRouteComponent | undefined
       expect(typeof component, `${path} 缺少组件`).toBe('function')
       expect(typeof component?.preload, `${path} 不是懒加载组件`).toBe('function')

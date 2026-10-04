@@ -342,7 +342,11 @@ describe('ImportTab', () => {
 
     const submit = screen.getByRole('button', { name: '创建导入任务' })
     expect(submit).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('请选择资料类别')
+    // 上游新增了「已选文件」的 role="status" 区域，页面上不再只有一个 status 节点，
+    // 因此按文案定位校验提示，并同时断言它仍是 status 提示区。
+    expect(
+      screen.getByText('请选择资料类别', { selector: '[role="status"]' })
+    ).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: '资料类别' })).toHaveAttribute('aria-invalid', 'true')
 
     await user.click(screen.getByRole('combobox', { name: '资料类别' }))

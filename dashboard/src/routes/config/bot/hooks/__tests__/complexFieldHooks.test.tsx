@@ -254,9 +254,13 @@ describe('complexFieldHooks', () => {
         <AliasNamesHook fieldPath="bot.alias_names" onChange={onChange} schema={fieldSchema} value={[]} />,
       )
 
-      expect(screen.getByText('暂无别名。')).toBeInTheDocument()
-
+      // 上游把别名编辑器收进了 Popover：触发按钮在计数为 0 时文案也是「添加别名」，
+      // 因此必须先展开浮层，并在浮层内定位真正的「添加」按钮。
       await user.click(screen.getByRole('button', { name: '添加别名' }))
+      const aliasDialog = await screen.findByRole('dialog', { name: '别名列表' })
+      expect(within(aliasDialog).getByText('暂无别名。')).toBeInTheDocument()
+
+      await user.click(within(aliasDialog).getByRole('button', { name: '添加别名' }))
       expect(onChange).toHaveBeenLastCalledWith([''])
 
       rerender(
@@ -2002,8 +2006,11 @@ describe('complexFieldHooks', () => {
       render(
         <AliasNamesHook fieldPath="bot.alias_names" onChange={onChange} schema={fieldSchema} value={null} />,
       )
-      expect(screen.getByText('暂无别名。')).toBeInTheDocument()
+      // 同前：别名编辑器在上游已收进 Popover，需先展开浮层。
       await user.click(screen.getByRole('button', { name: '添加别名' }))
+      const aliasDialog = await screen.findByRole('dialog', { name: '别名列表' })
+      expect(within(aliasDialog).getByText('暂无别名。')).toBeInTheDocument()
+      await user.click(within(aliasDialog).getByRole('button', { name: '添加别名' }))
       expect(onChange).toHaveBeenLastCalledWith([''])
 
       cleanup()

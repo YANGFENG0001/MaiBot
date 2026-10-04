@@ -11,6 +11,10 @@ import type { ConfigSchema, FieldSchema } from '@/types/config-schema'
 import type { ReactNode } from 'react'
 
 const toastMock = vi.fn()
+// 上游 1.3.2 在 bot.tsx 中新增了 useNavigate()（切换模式时改写 URL），
+// 但忘记在下面的 @tanstack/react-router mock 里补这个导出，
+// 导致该文件全部用例在 render 阶段就抛 "No useNavigate export is defined on the mock"。
+const navigateMock = vi.fn()
 
 // 路由 search 字符串（供 useRouterState mock 读取，可按用例改写）
 let routerSearchStr = ''
@@ -33,6 +37,7 @@ vi.mock('@tanstack/react-router', () => ({
   }: {
     select: (state: { location: { searchStr: string } }) => string
   }) => select({ location: { searchStr: routerSearchStr } }),
+  useNavigate: () => navigateMock,
 }))
 vi.mock('@/lib/restart-context', () => ({
   RestartProvider: ({ children }: { children: ReactNode }) => children,
@@ -363,6 +368,10 @@ beforeEach(() => {
   vi.mocked(configApi.updateBotConfigSection).mockResolvedValue({})
 })
 
+// 上游 1.3.2 把分节栏的展开/收起从「文字按钮（文案 更多 / 收起）」改成了图标按钮，
+// 可访问名改为 aria-label 的 '展开更多设置栏目' / '收起设置栏目'（另有一个下拉菜单按钮名为
+// '更多设置'，与本展开按钮不是同一个）。上游只同步改了 2 处查询，其余 13+ 处仍写着旧文案，
+// 这里统一对齐到实现的可访问名。
 async function renderBotPage() {
   const view = render(<BotConfigPage />)
   // 等待初始加载完成（模式切换 tab 出现）
@@ -587,7 +596,7 @@ describe('BotConfigPage 特征化', () => {
       expect(await screen.findByTestId('form-bot-sections')).toHaveTextContent('bot,sub_feature')
 
       // 点击「更多」后 advanced tab 出现
-      await user.click(screen.getByRole('button', { name: '更多' }))
+      await user.click(screen.getByRole('button', { name: '展开更多设置栏目' }))
       expect(within(tabList).getByRole('tab', { name: '实验性' })).toBeInTheDocument()
     })
 
@@ -633,7 +642,7 @@ describe('BotConfigPage 特征化', () => {
       await renderBotPage()
       await enterDetailMode(user)
 
-      await user.click(screen.getByRole('button', { name: '更多' }))
+      await user.click(screen.getByRole('button', { name: '展开更多设置栏目' }))
       await user.click(screen.getByRole('tab', { name: '实验性' }))
 
       // 实验性功能提示对话框
@@ -1053,11 +1062,11 @@ describe('BotConfigPage 特征化', () => {
       await enterDetailMode(user)
 
       const tabList = document.querySelector('[data-config-bot-tab-list="true"]') as HTMLElement
-      await user.click(within(tabList).getByRole('button', { name: '更多' }))
+      await user.click(within(tabList).getByRole('button', { name: '展开更多设置栏目' }))
       await user.click(within(tabList).getByRole('tab', { name: '实验性' }))
       expect(await screen.findByTestId('form-experimental')).toBeInTheDocument()
 
-      await user.click(within(tabList).getByRole('button', { name: '收起' }))
+      await user.click(within(tabList).getByRole('button', { name: '收起设置栏目' }))
       expect(within(tabList).queryByRole('tab', { name: '实验性' })).not.toBeInTheDocument()
       expect(await screen.findByTestId('form-personality')).toBeInTheDocument()
     })
@@ -1072,9 +1081,9 @@ describe('BotConfigPage 特征化', () => {
       await user.click(within(tabList).getByRole('tab', { name: '机器人' }))
       expect(await screen.findByTestId('form-bot')).toBeInTheDocument()
 
-      await user.click(within(tabList).getByRole('button', { name: '更多' }))
+      await user.click(within(tabList).getByRole('button', { name: '展开更多设置栏目' }))
       expect(within(tabList).getByRole('tab', { name: '实验性' })).toBeInTheDocument()
-      await user.click(within(tabList).getByRole('button', { name: '收起' }))
+      await user.click(within(tabList).getByRole('button', { name: '收起设置栏目' }))
 
       expect(within(tabList).queryByRole('tab', { name: '实验性' })).not.toBeInTheDocument()
       expect(screen.getByTestId('form-bot')).toBeInTheDocument()
@@ -1099,7 +1108,7 @@ describe('BotConfigPage 特征化', () => {
       await renderBotPage()
       await enterDetailMode(user)
 
-      expect(screen.queryByRole('button', { name: '更多' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '展开更多设置栏目' })).not.toBeInTheDocument()
     })
 
     it('第一个 tab 就是实验性时进入详细设置即弹出提示', async () => {
@@ -1133,7 +1142,7 @@ describe('BotConfigPage 特征化', () => {
       await renderBotPage()
       await enterDetailMode(user)
 
-      await user.click(screen.getByRole('button', { name: '更多' }))
+      await user.click(screen.getByRole('button', { name: '展开更多设置栏目' }))
       await user.click(screen.getByRole('tab', { name: '实验性' }))
 
       expect(screen.queryByText('实验性功能')).not.toBeInTheDocument()
@@ -1146,7 +1155,7 @@ describe('BotConfigPage 特征化', () => {
       await renderBotPage()
       await enterDetailMode(user)
 
-      await user.click(screen.getByRole('button', { name: '更多' }))
+      await user.click(screen.getByRole('button', { name: '展开更多设置栏目' }))
       await user.click(screen.getByRole('tab', { name: '实验性' }))
       expect(await screen.findByText('实验性功能')).toBeInTheDocument()
 
@@ -1184,11 +1193,11 @@ describe('BotConfigPage 特征化', () => {
         return node
       })
       expect(within(tabList).queryByRole('tab', { name: '实验性' })).not.toBeInTheDocument()
-      await user.click(within(tabList).getByRole('button', { name: '更多' }))
+      await user.click(within(tabList).getByRole('button', { name: '展开更多设置栏目' }))
       expect(within(tabList).getByRole('tab', { name: '实验性' })).toBeInTheDocument()
     })
 
-    it('uiUseSubTabs 按根字段/子类/高级子页拆分，并展示聊天管理提示', async () => {
+    it('uiUseSubTabs 按根字段/子类/高级子页拆分', async () => {
       const config = {
         ...baseConfig(),
         chat: { enabled: true, reply_timing: { talk_value: 1 }, reply_style: { style: 'a' } },
@@ -1213,24 +1222,27 @@ describe('BotConfigPage 特征化', () => {
       const defaultSubtabNames = within(subtabList)
         .getAllByRole('tab')
         .map((tab) => tab.textContent)
-      expect(defaultSubtabNames).toEqual(['总览', '时机子页', '回复风格'])
+      // chat.reply_style 会被 getDisplaySectionSchema 覆写为「聊天流prompt」且标记 uiAdvanced，
+      // 因此默认（未展开）只渲染根字段「总览」与非高级子类「时机子页」；回复风格属高级子页，
+      // 需展开后才出现（见下方断言）。上游新增该覆写后漏改此处旧期望。
+      expect(defaultSubtabNames).toEqual(['总览', '时机子页'])
 
       await user.click(within(subtabList).getByRole('tab', { name: '时机子页' }))
-      expect(
-        await screen.findByText(/需要按具体聊天流调整发言频率或查看聊天 Prompt/)
-      ).toBeInTheDocument()
-      expect(screen.getByText('麦麦聊天')).toBeInTheDocument()
+      // 上游 1.3.2 移除了此处原本的「聊天管理」引导条（该入口已由侧边栏 /chat-management 承载），
+      // 但保留了指向该文案的断言。这里改为断言子页内容确实切换到了 reply_timing 分节。
+      expect(await screen.findByTestId('form-ReplyTiming')).toBeInTheDocument()
 
-      await user.click(within(subtabList).getByRole('button', { name: '更多' }))
+      await user.click(within(subtabList).getByRole('button', { name: '展开更多设置栏目' }))
       expect(within(subtabList).getByRole('tab', { name: '高级文档' })).toBeInTheDocument()
       expect(within(subtabList).getByRole('tab', { name: '内部组' })).toBeInTheDocument()
+      expect(within(subtabList).getByRole('tab', { name: '聊天流prompt' })).toBeInTheDocument()
 
       await user.click(within(subtabList).getByRole('tab', { name: '内部组' }))
       expect(await screen.findByTestId('form-chat_inner.chat_leaf-sections')).toHaveTextContent(
         'chat_inner,chat_leaf'
       )
 
-      await user.click(within(subtabList).getByRole('button', { name: '收起' }))
+      await user.click(within(subtabList).getByRole('button', { name: '收起设置栏目' }))
       expect(within(subtabList).queryByRole('tab', { name: '内部组' })).not.toBeInTheDocument()
       expect(await screen.findByTestId('form-ChatSectionRoot')).toBeInTheDocument()
     })
@@ -1616,7 +1628,7 @@ describe('BotConfigPage 补充覆盖', () => {
     await user.click(screen.getByText('change-deep-root-ReplyTiming'))
     expect(screen.getByTestId('form-ReplyTiming-values')).toHaveTextContent('deep-新值')
 
-    await user.click(within(subtabList).getByRole('button', { name: '更多' }))
+    await user.click(within(subtabList).getByRole('button', { name: '展开更多设置栏目' }))
     await user.click(within(subtabList).getByRole('tab', { name: '内部组' }))
     const groupForm = await screen.findByTestId('form-chat_inner.chat_leaf-values')
     const beforeEmpty = groupForm.textContent
@@ -1688,7 +1700,7 @@ describe('BotConfigPage 补充覆盖', () => {
     expect(within(subtabList).getByRole('tab', { name: 'mystery' })).toBeInTheDocument()
     expect(within(subtabList).queryByRole('tab', { name: '备注' })).not.toBeInTheDocument()
 
-    await user.click(within(subtabList).getByRole('button', { name: '更多' }))
+    await user.click(within(subtabList).getByRole('button', { name: '展开更多设置栏目' }))
     await user.click(within(subtabList).getByRole('tab', { name: 'chat_inner' }))
     expect(await screen.findByTestId('form-chat_inner.chat_leaf-sections')).toHaveTextContent(
       'chat_inner,chat_leaf'
@@ -1738,11 +1750,11 @@ describe('BotConfigPage 补充覆盖', () => {
       return node
     })
     expect(within(subtabList).queryByRole('tab', { name: '机密页' })).not.toBeInTheDocument()
-    await user.click(within(subtabList).getByRole('button', { name: '更多' }))
+    await user.click(within(subtabList).getByRole('button', { name: '展开更多设置栏目' }))
     expect(within(subtabList).getByRole('tab', { name: '机密页' })).toBeInTheDocument()
     expect(await screen.findByTestId('form-Secret')).toBeInTheDocument()
 
-    await user.click(within(subtabList).getByRole('button', { name: '收起' }))
+    await user.click(within(subtabList).getByRole('button', { name: '收起设置栏目' }))
     expect(within(subtabList).queryByRole('tab', { name: '机密页' })).not.toBeInTheDocument()
   })
 
@@ -1772,11 +1784,11 @@ describe('BotConfigPage 补充覆盖', () => {
       if (!node) throw new Error('missing tab list')
       return node
     })
-    await user.click(within(tabList).getByRole('button', { name: '更多' }))
+    await user.click(within(tabList).getByRole('button', { name: '展开更多设置栏目' }))
     await user.click(within(tabList).getByRole('tab', { name: '实验性' }))
     expect(await screen.findByTestId('form-experimental')).toBeInTheDocument()
 
-    await user.click(within(tabList).getByRole('button', { name: '收起' }))
+    await user.click(within(tabList).getByRole('button', { name: '收起设置栏目' }))
     expect(within(tabList).queryByRole('tab', { name: '实验性' })).not.toBeInTheDocument()
   })
 })

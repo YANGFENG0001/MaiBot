@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,9 +8,22 @@ import { AboutTab } from '../AboutTab'
 import { SettingsPage } from '../index'
 
 const scrollAreaState = vi.hoisted(() => ({ attachViewportRef: true }))
+const navigateMock = vi.hoisted(() => vi.fn())
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
+}))
+
+vi.mock('@tanstack/react-router', () => ({
+  // 上游 1.3.2 把设置页内嵌进「麦麦设置」页后，改为从 router 读取当前查询串、并经由
+  // router 跳转（/config/bot?...&mode=webui）。这里直接以 jsdom 的 window.location.search
+  // 作为 searchStr 来源，使 window.history.replaceState 构造的 URL 依然生效。
+  useNavigate: () => navigateMock,
+  useRouterState: ({
+    select,
+  }: {
+    select: (state: { location: { searchStr: string } }) => unknown
+  }) => select({ location: { searchStr: window.location.search } }),
 }))
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -120,9 +133,8 @@ describe('设置页入口与关于页', () => {
     vi.unstubAllGlobals()
   })
 
-  it('优先读取查询参数，并在切换标签时同步 URL 和滚动位置', async () => {
+  it('优先读取查询参数，并通过路由跳转同步标签', async () => {
     window.history.replaceState(null, '', '/settings?tab=security')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
     const user = userEvent.setup()
 
     render(<SettingsPage />)
@@ -132,30 +144,20 @@ describe('设置页入口与关于页', () => {
 
     await user.click(screen.getByRole('button', { name: 'settings.tabs.about' }))
 
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
-    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/settings?tab=about')
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0 })
+    // 上游 1.3.2 把设置页内嵌进麦麦设置页：切换标签不再自行改写 window.history 与滚动位置，
+    // 而是经 router 跳转到 /config/bot?...&mode=webui（滚动由外层页面统一管理）。
+    expect(navigateMock).toHaveBeenLastCalledWith({
+      href: '/config/bot?tab=about&mode=webui',
+      replace: true,
+    })
   })
 
-  it('无效标签回退到外观页，并在滚动阈值两侧折叠和展开标题', () => {
+  it('查询参数中的无效标签回退到外观页', () => {
     window.history.replaceState(null, '', '/settings?tab=unknown')
     render(<SettingsPage />)
 
     expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'appearance')
     expect(screen.getByText('外观页内容')).toBeInTheDocument()
-
-    const viewport = screen.getByTestId('settings-scroll-viewport')
-    const titleContainer = screen.getByRole('heading', { name: 'settings.title' }).parentElement
-      ?.parentElement
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 500 })
-
-    viewport.scrollTop = 65
-    fireEvent.scroll(viewport)
-    expect(titleContainer).toHaveClass('max-h-0', 'opacity-0')
-
-    viewport.scrollTop = 4
-    fireEvent.scroll(viewport)
-    expect(titleContainer).toHaveClass('max-h-24', 'opacity-100')
   })
 
   it('关于页展示版本、技术栈、许可证和安全的外部链接属性', () => {
@@ -176,27 +178,19 @@ describe('设置页入口与关于页', () => {
     )
   })
 
-  it('hash 标签在无查询参数时生效，切回外观页时去掉 tab 参数', async () => {
+  it('不再自行解析 hash：hash 页签由 /settings 路由重定向统一兼容', () => {
     window.history.replaceState(null, '', '/settings#other')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
-    const user = userEvent.setup()
-
     render(<SettingsPage />)
 
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'other')
-    expect(screen.getByText('其他页内容')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'settings.tabs.appearance' }))
-
+    // 上游 1.3.2 把「旧书签的 tab 参数与 hash」兼容逻辑搬到 /settings 路由的 beforeLoad
+    // （重定向到 /config/bot?tab=...&mode=webui），设置页组件本身只读 searchStr，
+    // 因此这里无查询参数时直接回退外观页。
     expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'appearance')
     expect(screen.getByText('外观页内容')).toBeInTheDocument()
-    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/settings')
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0 })
   })
 
-  it('未知标签值回退到外观页', async () => {
+  it('未知标签值在读取侧回退外观页，写入侧不校验', async () => {
     window.history.replaceState(null, '', '/settings?tab=about')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
     const user = userEvent.setup()
 
     render(<SettingsPage />)
@@ -204,55 +198,21 @@ describe('设置页入口与关于页', () => {
 
     await user.click(screen.getByTestId('settings-invalid-tab'))
 
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'appearance')
-    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/settings')
-  })
-
-  it('滚动视口未挂载时不折叠标题', () => {
-    scrollAreaState.attachViewportRef = false
-    render(<SettingsPage />)
-
-    const viewport = screen.getByTestId('settings-scroll-viewport')
-    const titleContainer = screen.getByRole('heading', { name: 'settings.title' }).parentElement
-      ?.parentElement
-
-    viewport.scrollTop = 80
-    fireEvent.scroll(viewport)
-    expect(titleContainer).toHaveClass('max-h-24', 'opacity-100')
-  })
-
-  it('标题折叠或展开导致视口高度变化时校正滚动位置', () => {
-    const pending: FrameRequestCallback[] = []
-    vi.stubGlobal(
-      'requestAnimationFrame',
-      vi.fn((callback: FrameRequestCallback) => {
-        pending.push(callback)
-        return pending.length
-      })
-    )
-    vi.stubGlobal('cancelAnimationFrame', vi.fn())
-
-    render(<SettingsPage />)
-    const viewport = screen.getByTestId('settings-scroll-viewport')
-    let clientHeight = 400
-    Object.defineProperty(viewport, 'clientHeight', {
-      configurable: true,
-      get: () => clientHeight,
+    // 上游的 handleTabChange 不校验取值（校验只发生在派生 activeTab 时），未知值会原样写进 URL；
+    // 待路由更新后 searchStr 变为 tab=not-a-tab，读取侧才会回退到 appearance。
+    expect(navigateMock).toHaveBeenLastCalledWith({
+      href: '/config/bot?tab=not-a-tab&mode=webui',
+      replace: true,
     })
+    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
+  })
 
-    viewport.scrollTop = 80
-    fireEvent.scroll(viewport)
-    expect(pending).toHaveLength(1)
-    clientHeight = 520
-    pending[0](0)
-    expect(viewport.scrollTop).toBe(200)
+  it('设置页不再自带滚动容器与可折叠标题，滚动交由外层页面管理', () => {
+    render(<SettingsPage />)
 
-    viewport.scrollTop = 3
-    clientHeight = 520
-    fireEvent.scroll(viewport)
-    expect(pending).toHaveLength(2)
-    clientHeight = 300
-    pending[1](0)
-    expect(viewport.scrollTop).toBe(0)
+    // 上游 1.3.2 把设置页内嵌进麦麦设置页，移除了页面自身的 ScrollArea 与标题折叠逻辑。
+    expect(screen.queryByTestId('settings-scroll-viewport')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'settings.title' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('settings-tabs')).toBeInTheDocument()
   })
 })
