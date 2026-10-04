@@ -122,7 +122,7 @@ afterEach(() => {
 })
 
 describe('usePluginList 缺口', () => {
-  it('适配器管理路径不拉市场更新，仅看有更新也不会补拉', async () => {
+  it('适配器管理路径挂载时不拉市场更新，仅在开启「仅看有更新」时按需补拉', async () => {
     window.history.replaceState(null, '', '/adapter-management')
     vi.mocked(getInstalledPlugins).mockResolvedValue([
       makePlugin('adapter.qq', { manifest: { plugin_type: 'adapter' } }),
@@ -135,8 +135,14 @@ describe('usePluginList 缺口', () => {
     expect(getMaimaiVersion).not.toHaveBeenCalled()
 
     act(() => result.current.setShowUpdateOnly(true))
+    // 本项目：适配器管理路径在挂载时刻意跳过市场拉取（上面两条断言即为此），
+    // 改为在用户开启「仅看有更新」且市场缓存为空时按需补拉一次。
+    // 上游是在挂载时就拉过市场数据，所以上游此处断言 0 次。
+    expect(fetchPluginList).toHaveBeenCalledTimes(1)
+
     act(() => result.current.closePluginConfig())
-    expect(fetchPluginList).not.toHaveBeenCalled()
+    // 关闭配置面板不会再触发市场检查。
+    expect(fetchPluginList).toHaveBeenCalledTimes(1)
     expect(result.current.showUpdateOnly).toBe(true)
   })
 
@@ -146,9 +152,13 @@ describe('usePluginList 缺口', () => {
     const calls = vi.mocked(fetchPluginList).mock.calls.length
 
     act(() => result.current.setShowUpdateOnly(true))
+    // 本项目：开启开关且市场缓存为空时会补拉一次（上游的实现在挂载时已拉过，故不补拉）。
+    expect(fetchPluginList).toHaveBeenCalledTimes(calls + 1)
+
     act(() => result.current.setShowUpdateOnly(false))
     expect(result.current.showUpdateOnly).toBe(false)
-    expect(fetchPluginList).toHaveBeenCalledTimes(calls)
+    // 关闭开关本身不再触发额外请求。
+    expect(fetchPluginList).toHaveBeenCalledTimes(calls + 1)
   })
 
   it('空搜索展示去重后的全部插件；无描述插件仍可按名称命中', async () => {
@@ -264,10 +274,12 @@ describe('usePluginList 缺口', () => {
       hasUpdate: true,
       latestVersion: '1.0.0.1',
     })
+    // 本项目把「已是最新」也标记为可操作（canUpdate: true），以便「检测更新 / 从仓库更新」
+    // 按钮始终可用；上游此处为 canUpdate: false + title「当前已是最新版本」。
     expect(result.current.getPluginUpdateState(newerCurrent)).toMatchObject({
-      canUpdate: false,
+      canUpdate: true,
       hasUpdate: false,
-      title: '当前已是最新版本',
+      title: '检查官方仓库并更新到最新版本',
     })
   })
 

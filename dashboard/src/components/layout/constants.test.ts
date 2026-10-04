@@ -57,8 +57,12 @@ describe('menuSections 菜单结构', () => {
     expect(homeItem.searchDescription).toBe('search.items.homeDesc')
   })
 
-  it('麦麦观察合并进聊天工作区后不再占用主侧边栏入口', () => {
-    expect(allItems).not.toEqual(
+  // 上游 1.3.2 把「麦麦观察」收进麦麦聊天工作区，并从主侧边栏移除了该入口。
+  // 本项目保留顶级「麦麦观察」入口（用户既有的导航路径，且 /planner-monitor 路由仍在），
+  // 因此这里按本项目的实际侧边栏结构断言：入口仍然存在。若后续决定采纳上游的收纳方案，
+  // 需要同时删除 constants.ts 中的该条目并恢复上游的否定断言。
+  it('麦麦观察保留为主侧边栏顶级入口', () => {
+    expect(allItems).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: '/planner-monitor' })])
     )
   })
