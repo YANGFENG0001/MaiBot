@@ -3,6 +3,14 @@ import { backendApi } from '@/lib/http'
 const AUDIT_BASE = '/api/webui'
 const KAMI_BASE = '/api/webui/kami'
 
+export interface MemoryAccessScope {
+  home_space_id?: string
+  audience_type?: string
+  space_ids?: string[]
+  partition_ids?: string[]
+  writable_partition_ids?: string[]
+}
+
 export interface MemoryAccessAuditItem {
   id: number
   trace_id: string
@@ -12,10 +20,13 @@ export interface MemoryAccessAuditItem {
   active_bot_profile_id: string
   permission_group_id: string
   access_mode: string
+  security_domain: string
+  policy_revision: number
+  decision_reason: string
   query_hash: string
-  requested_scope: Record<string, unknown>
-  allowed_scope: Record<string, unknown>
-  denied_scope: Record<string, unknown>
+  requested_scope: MemoryAccessScope
+  allowed_scope: MemoryAccessScope
+  denied_scope: MemoryAccessScope
   result_count: number
   latency_ms: number
   created_at: string

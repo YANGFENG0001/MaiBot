@@ -318,8 +318,9 @@ async def test_search_memory_uses_kernel_patched_chat_scope_execution(monkeypatc
         self: MemorySearchHitProcessingService,
         chat_id: str,
         shared_chat_ids: Any,
+        **kwargs: Any,
     ) -> RetrievalScope:
-        del self, shared_chat_ids
+        del self, shared_chat_ids, kwargs
         assert chat_id == "session-current"
         return RetrievalScope(key="chat:session-current", paragraph_ids=frozenset({"paragraph-1"}))
 

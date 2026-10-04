@@ -275,6 +275,36 @@ class MemoryService:
             result_count=result_count,
             success=success,
         )
+        # 观察页读取的是 memory_access_audit；不写这一行，观察页永远看不到任何请求。
+        # 决策元数据（BotProfile/权限组/版本/原因）只从可信请求上下文取，不从调用方参数取。
+        request_context = get_current_request_context()
+        if request_context is None or request_context.trace_id != scope.trace_id:
+            return
+        from src.workspaces.kami_service import KamiService
+
+        KamiService.record_memory_access_audit(
+            trace_id=scope.trace_id,
+            session_id=request_context.session_id,
+            person_id=request_context.person_id,
+            workspace_id=scope.workspace_id,
+            active_bot_profile_id=request_context.active_bot_profile_id,
+            permission_group_id=request_context.permission_group_id,
+            access_mode=scope.access_mode,
+            security_domain=scope.security_domain,
+            policy_revision=request_context.policy_revision,
+            decision_reason=request_context.decision_reason,
+            requested_scope={
+                "home_space_id": request_context.home_memory_space_id,
+                "audience_type": request_context.audience_type,
+            },
+            allowed_scope={
+                "space_ids": list(scope.readable_space_ids),
+                "partition_ids": list(scope.readable_partition_ids),
+                "writable_partition_ids": list(scope.writable_partition_ids),
+            },
+            denied_scope={},
+            result_count=result_count,
+        )
 
     @staticmethod
     def _memory_space_from_hit(hit: MemoryHit) -> str:

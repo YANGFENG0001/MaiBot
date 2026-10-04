@@ -511,6 +511,9 @@ class KamiService:
         active_bot_profile_id: str = "",
         permission_group_id: str = "",
         access_mode: str = "normal",
+        security_domain: str = "normal",
+        policy_revision: int = 0,
+        decision_reason: str = "",
         query: str = "",
         requested_scope: Optional[dict] = None,
         allowed_scope: Optional[dict] = None,
@@ -518,9 +521,10 @@ class KamiService:
         result_count: int = 0,
         latency_ms: int = 0,
     ) -> None:
-        """记录记忆访问审计；只保存不可逆 query_hash 与作用域 JSON。
+        """记录记忆访问审计；只保存不可逆 query_hash、范围与决策元数据。
 
-        查询原文与记忆正文一律不进库。
+        查询原文与记忆正文一律不进库；security_domain、policy_revision 和
+        decision_reason 用于让观察页解释「这次请求为什么能/不能读到某段记忆」。
         """
         query_hash = sha256(str(query or "").encode("utf-8")).hexdigest()
         with get_db_session() as session:
@@ -533,6 +537,9 @@ class KamiService:
                     active_bot_profile_id=active_bot_profile_id or "",
                     permission_group_id=permission_group_id or "",
                     access_mode=access_mode,
+                    security_domain=security_domain or "normal",
+                    policy_revision=int(policy_revision or 0),
+                    decision_reason=decision_reason or "",
                     query_hash=query_hash,
                     requested_scope_json=json.dumps(requested_scope or {}, ensure_ascii=False),
                     allowed_scope_json=json.dumps(allowed_scope or {}, ensure_ascii=False),

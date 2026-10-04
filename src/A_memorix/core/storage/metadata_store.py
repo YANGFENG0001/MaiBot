@@ -186,7 +186,11 @@ class MetadataStore(
         if not object_type or not object_id or security_domain not in {"normal", "kami"}:
             raise ValueError("invalid memory scope member")
         conn = connection or self._conn
-        self._ensure_memory_scope_tables(conn.cursor())
+        # 写入路径只允许建表，绝不能触发 legacy 回填：调用方通常刚把对象写进
+        # paragraphs/relations，此时该对象还没有成员行，回填会把它当成历史遗留数据
+        # 抢先登记成 memory-space-public（security_domain=normal），使 Kami 等受限
+        # 安全域的对象同时出现在 normal 域下。
+        self._ensure_memory_scope_tables(conn.cursor(), backfill=False)
         if connection is None and commit:
             conn.commit()
         now = datetime.now().timestamp()
@@ -226,6 +230,43 @@ class MetadataStore(
         result: Dict[str, set[str]] = {}
         for row in rows:
             result.setdefault(str(row[0]), set()).add(str(row[1]))
+        return result
+
+    def resolve_scope_object_partitions(self, *, partition_ids: Sequence[str] = (),
+                                        memory_space_ids: Sequence[str] = (),
+                                        security_domain: str = "normal") -> Dict[str, str]:
+        """把 partition scope 解析为 object_id → partition_id 映射。
+
+        命中结果回传上层后，MaiBot 侧需要用 ``partition_id`` 做请求级分区校验；
+        只有能解析出「属于本次请求允许分区」的对象才会带上该字段。
+        """
+        clauses = ["security_domain = ?"]
+        params: List[Any] = [str(security_domain or "normal").strip().lower()]
+        partitions = tuple(dict.fromkeys(str(x).strip() for x in partition_ids if str(x).strip()))
+        spaces = tuple(dict.fromkeys(str(x).strip() for x in memory_space_ids if str(x).strip()))
+        if partitions:
+            clauses.append("partition_id IN (" + ",".join("?" for _ in partitions) + ")")
+            params.extend(partitions)
+        if spaces:
+            clauses.append("memory_space_id IN (" + ",".join("?" for _ in spaces) + ")")
+            params.extend(spaces)
+        rows = self._conn.execute(
+            "SELECT object_id, partition_id, memory_space_id FROM memory_scope_members WHERE "
+            + " AND ".join(clauses),
+            params,
+        ).fetchall()
+        preferred = set(partitions)
+        result: Dict[str, str] = {}
+        for row in rows:
+            object_id = str(row[0])
+            partition_id = str(row[1])
+            current = result.get(object_id)
+            if current is None:
+                result[object_id] = partition_id
+                continue
+            # 同一对象可能同时登记在默认分区与真实分区上；优先保留显式允许的分区。
+            if partition_id in preferred and current not in preferred:
+                result[object_id] = partition_id
         return result
 
     def get_db_path(self) -> Path:

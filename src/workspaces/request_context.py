@@ -39,6 +39,7 @@ class BotRequestContext:
     writable_partition_ids: tuple[str, ...]
     audience_type: str
     policy_revision: int
+    decision_reason: str = ""
 
 
 _current_request_context: ContextVar[Optional[BotRequestContext]] = ContextVar(

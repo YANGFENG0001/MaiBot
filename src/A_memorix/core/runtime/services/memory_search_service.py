@@ -47,15 +47,24 @@ class MemorySearchService(KernelServiceBase):
         # Partition scope is resolved inside A-Memorix before vector/graph candidates are ranked.
         partition_ids = tuple(str(x).strip() for x in request.allowed_partition_ids if str(x).strip())
         memory_space_ids = tuple(str(x).strip() for x in request.allowed_memory_space_ids if str(x).strip())
+        # 显式分区范围由 AccessResolver 逐请求裁定，是权威授权来源；此时不得再用聊天流
+        # 范围额外收窄，否则跨会话/跨空间被显式授权的记忆（如 B.conversation:session-b）
+        # 永远召回不到。未给出分区范围时保持原有严格聊天流隔离。
+        partition_scope_authoritative = bool(partition_ids)
+        partition_map: Dict[str, str] = {}
         if self.metadata_store is not None and (partition_ids or memory_space_ids):
             scoped = self.metadata_store.resolve_scope_object_ids(
+                partition_ids=partition_ids, memory_space_ids=memory_space_ids,
+                security_domain=str(request.security_domain or "normal"),
+            )
+            partition_map = self.metadata_store.resolve_scope_object_partitions(
                 partition_ids=partition_ids, memory_space_ids=memory_space_ids,
                 security_domain=str(request.security_domain or "normal"),
             )
             from ...retrieval import RetrievalScope
             def _intersect(kind: str) -> frozenset[str]:
                 resolved = set(scoped.get(kind, set()))
-                if scope is None:
+                if partition_scope_authoritative or scope is None:
                     return frozenset(resolved)
                 existing = set(getattr(scope, f"{kind}_ids", frozenset()))
                 return frozenset(resolved & existing)
@@ -103,7 +112,7 @@ class MemorySearchService(KernelServiceBase):
                     current_user_id=request.user_id,
                 )
             hits = hits[:limit]
-            return await self._finalize_search_response(hits)
+            return await self._finalize_search_response(hits, partition_map=partition_map)
 
         if mode == "aggregate":
             payload = await self.aggregate_query_service.execute(
@@ -131,7 +140,7 @@ class MemorySearchService(KernelServiceBase):
                     current_user_id=request.user_id,
                 )
             filtered = filtered[:limit]
-            return await self._finalize_search_response(filtered)
+            return await self._finalize_search_response(filtered, partition_map=partition_map)
 
         query_type = mode
         runtime_config = self._build_runtime_config()
@@ -164,10 +173,27 @@ class MemorySearchService(KernelServiceBase):
                 current_user_id=request.user_id,
             )
         filtered = filtered[:limit]
-        return await self._finalize_search_response(filtered)
+        return await self._finalize_search_response(filtered, partition_map=partition_map)
 
-    async def _finalize_search_response(self, hits: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _finalize_search_response(
+        self,
+        hits: List[Dict[str, Any]],
+        *,
+        partition_map: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         """只为最终返回且实际采用的关系命中提交一次 ACCESS。"""
+        if partition_map:
+            for item in hits:
+                if str(item.get("type", "") or "").strip() != "paragraph":
+                    continue
+                partition_id = partition_map.get(str(item.get("hash", "") or "").strip())
+                if not partition_id:
+                    continue
+                metadata = item.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    item["metadata"] = metadata
+                metadata.setdefault("partition_id", partition_id)
 
         relation_hashes: List[str] = []
         seen: set[str] = set()
