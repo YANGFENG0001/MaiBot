@@ -30,6 +30,7 @@ from src.webui.routers.memory_transfers import router as memory_transfers_router
 from src.webui.routers.operations import router as operations_router
 from src.webui.routers.mcp import router as mcp_router
 from src.webui.routers.model import router as model_router
+from src.webui.routers.news import router as news_router
 from src.webui.routers.person import router as person_router
 from src.webui.routers.plugin import router as plugin_router
 from src.webui.routers.reasoning_process import router as reasoning_process_router
@@ -79,6 +80,8 @@ router.include_router(reply_effects_router)
 router.include_router(search_router)
 # 注册模型列表获取路由
 router.include_router(model_router)
+# 注册首页资讯路由
+router.include_router(news_router)
 # 注册长期记忆管理路由
 router.include_router(memory_router)
 router.include_router(memory_transfers_router)

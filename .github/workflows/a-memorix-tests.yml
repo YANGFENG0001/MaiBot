@@ -7,7 +7,6 @@ on:
       - "src/services/memory_service.py"
       - "src/webui/routers/memory.py"
       - "pytests/A_memorix_test/**"
-      - "pytests/webui/test_memory_routes_integration.py"
       - "pyproject.toml"
       - "requirements.txt"
       - "uv.lock"
@@ -28,6 +27,8 @@ jobs:
       - name: 安装项目依赖
         run: uv sync --frozen --group dev
       - name: 运行 A_Memorix 测试
-        # 必须用 `python -m pytest`：裸 `pytest` 不会把仓库根目录加入 sys.path，
-        # 会导致所有测试模块在收集阶段就报 `ModuleNotFoundError: No module named 'src'`。
-        run: uv run python -m pytest -q pytests/A_memorix_test pytests/webui/test_memory_routes_integration.py
+        # 保留 `python -m pytest`：即使 pyproject 已配置 pythonpath，显式走模块入口
+        # 也能确保仓库根目录进入 sys.path，避免收集阶段报 ModuleNotFoundError。
+        # 注意：pytests/webui/test_memory_routes_integration.py 已由上游移除，
+        # 不得再引用，否则工作流会因路径不存在直接失败。
+        run: uv run python -m pytest -q pytests/A_memorix_test

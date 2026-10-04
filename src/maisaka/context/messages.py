@@ -622,6 +622,7 @@ class ReferenceMessage(LLMContextMessage):
     display_prefix: str = "[参考消息]"
     security_domain: str = field(default_factory=_current_security_domain)
     context_item_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    jargon_entries: tuple[tuple[str, str], ...] = ()
 
     @property
     def role(self) -> str:

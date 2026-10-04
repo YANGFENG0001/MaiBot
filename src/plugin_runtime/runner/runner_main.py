@@ -37,6 +37,7 @@ from src.config.config_utils import compare_versions
 from src.plugin_runtime import (
     ENV_BLOCKED_PLUGIN_REASONS,
     ENV_EXTERNAL_PLUGIN_IDS,
+    ENV_FORCE_PLUGIN_COMPATIBILITY,
     ENV_HOST_VERSION,
     ENV_IPC_ADDRESS,
     ENV_PLUGIN_DIRS,
@@ -45,6 +46,7 @@ from src.plugin_runtime import (
     ENV_SESSION_TOKEN,
     ENV_TRUSTED_PLUGIN_DIRS,
 )
+from src.plugin_runtime.compat_policy import parse_force_plugin_compatibility_env
 from src.plugin_runtime.protocol.envelope import (
     BootstrapPluginPayload,
     ComponentDeclaration,
@@ -82,6 +84,7 @@ from src.plugin_runtime.runner.log_handler import RunnerIPCLogHandler
 from src.plugin_runtime.runner.plugin_paths import PluginPaths, build_plugin_paths
 from src.plugin_runtime.runner.plugin_loader import PluginCandidate, PluginLoader, PluginMeta
 from src.plugin_runtime.runner.rpc_client import RPCClient
+from src.plugin_runtime.webui_schema import load_webui_extension
 
 logger = get_logger("plugin_runtime.runner.main")
 
@@ -410,6 +413,9 @@ class PluginRunner:
             host_version=os.getenv(ENV_HOST_VERSION, ""),
             plugin_type_filter=plugin_type_filter,
             trusted_plugin_dirs=trusted_plugin_dirs or [],
+            force_plugin_compatibility=parse_force_plugin_compatibility_env(
+                os.getenv(ENV_FORCE_PLUGIN_COMPATIBILITY, "")
+            ),
         )
         self._loader.set_blocked_plugin_reasons(self._blocked_plugin_reasons)
         self._start_time: float = time.monotonic()
@@ -1452,8 +1458,15 @@ class PluginRunner:
             )
             return False
 
+        try:
+            webui = await asyncio.to_thread(load_webui_extension, meta.plugin_dir)
+        except (OSError, ValueError) as exc:
+            logger.error(f"插件 {meta.plugin_id} WebUI 声明无效: {exc}")
+            return False
+
         reg_payload = RegisterPluginPayload(
             plugin_id=meta.plugin_id,
+            webui=webui,
             plugin_version=meta.version,
             plugin_type=meta.plugin_type,
             components=components,

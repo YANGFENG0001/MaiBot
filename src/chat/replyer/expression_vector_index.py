@@ -7,14 +7,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
 import asyncio
+import copy
 import json
 import os
+import threading
 import time
 import uuid
 
 import numpy as np
 
 from src.common.logger import get_logger
+from src.config.config import config_manager
 
 logger = get_logger("expression_vector_index")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -436,8 +439,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def _load_index_payload(index_path: Path) -> dict[str, Any] | None:
-    """读取生成索引；损坏内容会被明确记录，并交由数据库重建。"""
+def _read_and_parse_index_payload(index_path: Path) -> dict[str, Any] | None:
+    """实际读取并解析索引 JSON，不做任何缓存。"""
 
     if not index_path.exists():
         return None
@@ -459,6 +462,103 @@ def _load_index_payload(index_path: Path) -> dict[str, Any] | None:
     return payload
 
 
+# 按「路径 + mtime」缓存解析结果。索引 JSON 有 11MB，解析一次约 110ms；而历史
+# 补建扫描、指纹比对等只读流程会反复读取同一份内容，每次重新解析会长时间占用 GIL，
+# 进而阻塞两个事件循环。缓存条目在文件变更时自动失效。
+_index_payload_cache: Dict[Path, tuple[float, dict[str, Any]]] = {}
+_index_payload_cache_lock = threading.Lock()
+
+
+def _load_index_payload(index_path: Path) -> dict[str, Any] | None:
+    """读取生成索引（带 mtime 缓存）；损坏内容会被明确记录，并交由数据库重建。
+
+    返回的对象由缓存持有，调用方不得原地修改；需要改写的场景请使用
+    ``_load_mutable_index_payload``。
+    """
+
+    try:
+        mtime = index_path.stat().st_mtime
+    except OSError:
+        # 文件不存在或无法访问，交给非缓存路径给出明确日志。
+        return _read_and_parse_index_payload(index_path)
+
+    with _index_payload_cache_lock:
+        cached = _index_payload_cache.get(index_path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+
+    payload = _read_and_parse_index_payload(index_path)
+    if payload is None:
+        return None
+
+    with _index_payload_cache_lock:
+        _index_payload_cache[index_path] = (mtime, payload)
+    return payload
+
+
+def _load_mutable_index_payload(index_path: Path) -> dict[str, Any] | None:
+    """读取一份可安全改写的索引副本，用于会写回文件的流程。
+
+    深拷贝需要约 115ms，因此仅在真正要改写索引的调用点付出这份成本。
+    """
+
+    payload = _load_index_payload(index_path)
+    if payload is None:
+        return None
+    return copy.deepcopy(payload)
+
+
+# 补建流程会在同一轮里多次判断「哪些表达缺向量」，每次都全表读取 expressions
+# 会重复付出约 45ms 的扫描与对象构造成本。这里做短 TTL 快照，让同一轮内的多次
+# 判断复用同一份数据；TTL 很短，且补充新表达本就是按周期进行的，不影响时效性。
+_EXPRESSION_ROWS_TTL_SECONDS = 5.0
+_expression_rows_cache: tuple[float, List[tuple[Any, ...]]] | None = None
+_expression_rows_cache_lock = threading.Lock()
+
+
+def _load_expression_rows_snapshot() -> List[tuple[Any, ...]]:
+    """读取 expressions 表的关键列，命中短 TTL 快照时直接复用。"""
+
+    global _expression_rows_cache
+
+    now = time.monotonic()
+    with _expression_rows_cache_lock:
+        cached = _expression_rows_cache
+        if cached is not None and now - cached[0] < _EXPRESSION_ROWS_TTL_SECONDS:
+            return cached[1]
+
+    from sqlmodel import select
+
+    from src.common.database.database import get_db_session
+    from src.common.database.database_model import Expression
+
+    with get_db_session(auto_commit=False) as session:
+        rows = session.exec(
+            select(
+                Expression.id,
+                Expression.situation,
+                Expression.style,
+                Expression.count,
+                Expression.session_id,
+                Expression.checked,
+                Expression.modified_by,
+            ).order_by(Expression.id)
+        ).all()
+
+    materialized = [tuple(row) for row in rows]
+    with _expression_rows_cache_lock:
+        _expression_rows_cache = (now, materialized)
+    return materialized
+
+
+def _invalidate_expression_rows_snapshot() -> None:
+    """丢弃行快照，供明确需要立刻读到最新数据的场景使用。"""
+
+    global _expression_rows_cache
+    with _expression_rows_cache_lock:
+        _expression_rows_cache = None
+
+
 class ExpressionVectorIndex:
     """表达方式向量索引运行时加载器。"""
 
@@ -466,7 +566,9 @@ class ExpressionVectorIndex:
         self._snapshot: ExpressionVectorIndexSnapshot | None = None
         self._update_lock = asyncio.Lock()
         self._profile_lock = asyncio.Lock()
-        self._profile_cache: tuple[float, ExpressionEmbeddingProfile] | None = None
+        self._profile_cache: Tuple[
+            float, ExpressionEmbeddingProfile, Tuple[Tuple[str, str, str], ...]
+        ] | None = None
         self._profile_drift_candidate: ExpressionEmbeddingProfile | None = None
         self._profile_drift_confirmations = 0
         self._history_backfill_task: asyncio.Task[None] | None = None
@@ -492,6 +594,18 @@ class ExpressionVectorIndex:
 
         self._profile_drift_candidate = None
         self._profile_drift_confirmations = 0
+
+    @staticmethod
+    def _configured_embedding_identity() -> Tuple[Tuple[str, str, str], ...]:
+        """读取当前 embedding 任务实际配置，用于在热重载后立刻淘汰旧 profile。"""
+
+        model_config = config_manager.get_model_config()
+        models_by_name = {model.name: model for model in model_config.models}
+        identity: List[Tuple[str, str, str]] = []
+        for model_name in model_config.model_task_config.embedding.model_list:
+            model = models_by_name[model_name]
+            identity.append((model.name, model.model_identifier, model.api_provider))
+        return tuple(identity)
 
     def _resolve_embedding_profile_candidate(
         self,
@@ -556,16 +670,18 @@ class ExpressionVectorIndex:
         """用固定探针解析当前 embedding 后端 profile，并做短时缓存。"""
 
         now = time.monotonic()
+        configured_identity = self._configured_embedding_identity()
         if self._profile_cache is not None:
-            cached_at, cached_profile = self._profile_cache
-            if now - cached_at <= EMBEDDING_PROFILE_CACHE_SECONDS:
+            cached_at, cached_profile, cached_identity = self._profile_cache
+            if cached_identity == configured_identity and now - cached_at <= EMBEDDING_PROFILE_CACHE_SECONDS:
                 return cached_profile
 
         async with self._profile_lock:
             now = time.monotonic()
+            configured_identity = self._configured_embedding_identity()
             if self._profile_cache is not None:
-                cached_at, cached_profile = self._profile_cache
-                if now - cached_at <= EMBEDDING_PROFILE_CACHE_SECONDS:
+                cached_at, cached_profile, cached_identity = self._profile_cache
+                if cached_identity == configured_identity and now - cached_at <= EMBEDDING_PROFILE_CACHE_SECONDS:
                     return cached_profile
 
             from src.services.embedding_service import EmbeddingServiceClient
@@ -586,7 +702,7 @@ class ExpressionVectorIndex:
                 persisted_profile=persisted_profile,
                 candidate_profile=candidate_profile,
             )
-            self._profile_cache = (time.monotonic(), profile)
+            self._profile_cache = (time.monotonic(), profile, configured_identity)
             logger.info(
                 f"表达向量 embedding profile 已标定: marker={profile.marker[:12]} "
                 f"model={profile.model_name} identifier={profile.model_identifier} "
@@ -961,10 +1077,7 @@ class ExpressionVectorIndex:
     ) -> ExpressionHistoryBackfillSelection:
         """从数据库读取一批缺失或过期的历史表达。"""
 
-        from sqlmodel import select
-
-        from src.common.database.database import get_db_session
-        from src.common.database.database_model import Expression, ModifiedBy
+        from src.common.database.database_model import ModifiedBy
 
         payload = _load_index_payload(index_path)
         indexed_by_id: Dict[int, dict[str, Any]] = {}
@@ -986,20 +1099,7 @@ class ExpressionVectorIndex:
         deferred_count = 0
         isolated_count = 0
         now_timestamp = time.time()
-        with get_db_session(auto_commit=False) as session:
-            statement = (
-                select(
-                    Expression.id,
-                    Expression.situation,
-                    Expression.style,
-                    Expression.count,
-                    Expression.session_id,
-                    Expression.checked,
-                    Expression.modified_by,
-                )
-                .order_by(Expression.id)
-            )
-            rows = session.exec(statement).all()
+        rows = _load_expression_rows_snapshot()
 
         for row in rows:
             expression_id, situation, style, count, session_id, checked, modified_by = row
@@ -1055,26 +1155,85 @@ class ExpressionVectorIndex:
             isolated_count=isolated_count,
         )
 
+    def get_history_backfill_progress(self, *, index_path: str) -> Dict[str, Any]:
+        """按当前 embedding 配置统计表达库的可用向量，不触发探针或重建。"""
+
+        from src.config.config import global_config
+
+        if not global_config.expression.use_vector_expression:
+            return {"status": "disabled", "completed": 0, "total": 0, "percent": 0.0}
+
+        configured_identity = self._configured_embedding_identity()
+        if not configured_identity:
+            return {"status": "unconfigured", "completed": 0, "total": 0, "percent": 0.0}
+
+        payload = _load_index_payload(resolve_project_path(index_path)) or {}
+        raw_profile = payload.get("embedding_profile")
+        profile = raw_profile if isinstance(raw_profile, dict) else {}
+        profile_identity = (
+            normalize_text(profile.get("model_name")),
+            normalize_text(profile.get("model_identifier")),
+            normalize_text(profile.get("api_provider")),
+        )
+        profile_matches = profile_identity == configured_identity[0]
+        marker = normalize_text(profile.get("marker")) if profile_matches else ""
+        if (
+            self._profile_cache is not None
+            and self._profile_cache[2] == configured_identity
+            and time.monotonic() - self._profile_cache[0] <= EMBEDDING_PROFILE_CACHE_SECONDS
+        ):
+            # 探针已发现同名模型的向量空间漂移，而索引尚未写入新 profile 时旧向量不能算作完成。
+            if self._profile_cache[1].marker != marker:
+                profile_matches = False
+                marker = ""
+        dimension = int(profile.get("dimension") or 0) if profile_matches else 0
+        indexed_by_id = {
+            int(item.get("id") or 0): item
+            for item in payload.get("expressions") or []
+            if isinstance(item, dict) and int(item.get("id") or 0) > 0
+        }
+
+        total = 0
+        completed = 0
+        for row in _load_expression_rows_snapshot():
+            expression_id, situation, style = row[:3]
+            normalized_situation = normalize_text(situation)
+            normalized_style = normalize_text(style)
+            if expression_id is None or not normalized_situation or not normalized_style:
+                continue
+            total += 1
+            indexed = indexed_by_id.get(int(expression_id))
+            if (
+                marker
+                and indexed is not None
+                and normalize_text(indexed.get("embedding_profile_marker")) == marker
+                and int(indexed.get("embedding_dimension") or 0) == dimension
+                and normalize_text(indexed.get("fingerprint"))
+                == expression_fingerprint(int(expression_id), normalized_situation, normalized_style)
+            ):
+                completed += 1
+
+        running = self._history_backfill_task is not None and not self._history_backfill_task.done()
+        if not profile_matches:
+            status = "waiting_profile"
+        elif completed == total:
+            status = "completed"
+        else:
+            status = "running" if running else "pending"
+        return {
+            "status": status,
+            "completed": completed,
+            "total": total,
+            "percent": round(completed * 100 / total, 1) if total else 100.0,
+        }
+
     @staticmethod
     def _load_current_expression_fingerprints() -> Dict[int, str]:
         """读取当前数据库中仍有效的表达方式指纹，用于清理过期索引项。"""
 
-        from sqlmodel import select
-
-        from src.common.database.database import get_db_session
-        from src.common.database.database_model import Expression
-
         fingerprints: Dict[int, str] = {}
-        with get_db_session(auto_commit=False) as session:
-            rows = session.exec(
-                select(
-                    Expression.id,
-                    Expression.situation,
-                    Expression.style,
-                )
-            ).all()
-
-        for expression_id, situation, style in rows:
+        for row in _load_expression_rows_snapshot():
+            expression_id, situation, style = row[0], row[1], row[2]
             if expression_id is None:
                 continue
             normalized_situation = normalize_text(situation)
@@ -1599,7 +1758,8 @@ class ExpressionVectorIndex:
         previous_profile_cluster_centers: Dict[str, np.ndarray] = {}
         prior_changes_since_recluster = 0
         prior_changed_expression_ids: set[int] = set()
-        existing_payload = await asyncio.to_thread(_load_index_payload, index_path)
+        # 这份 payload 会被改写并写回索引文件，必须取独立副本，不能改到缓存对象上。
+        existing_payload = await asyncio.to_thread(_load_mutable_index_payload, index_path)
 
         if existing_payload is None:
             from src.common.database.database import DATABASE_URL
@@ -2362,6 +2522,16 @@ class ExpressionVectorIndex:
             if selection.items:
                 return False
 
+            # 聚类成熟度只依赖索引 payload 的 cluster_maintenance 字段，不需要向量数据。
+            # 索引已稳定时先短路返回，避免为了确认「无需处理」而付出深拷贝 payload 与
+            # 加载向量阵列的代价——空转轮次会周期性地走到这里。
+            current_payload = await asyncio.to_thread(_load_index_payload, index_path)
+            if current_payload is not None and (
+                self._resolve_cluster_state(current_payload, profile_marker=profile.marker)
+                == CLUSTER_STATE_STABLE
+            ):
+                return True
+
             current_fingerprints = await asyncio.to_thread(
                 self._load_current_expression_fingerprints
             )
@@ -2531,7 +2701,7 @@ class ExpressionVectorIndex:
         while True:
             from src.config.config import global_config
 
-            if global_config.expression.expression_selection_mode != "vector_intent":
+            if not global_config.expression.use_vector_expression:
                 logger.info("表达向量历史补建已停止：当前表达选择模式不是向量模式")
                 return
 
