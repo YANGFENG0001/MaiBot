@@ -10,6 +10,16 @@ from src.webui.services import git_mirror_service
 from src.webui.utils import network_security
 
 
+def _github_builtin_mirror():
+    """取内置的 GitHub 直连镜像（raw_prefix 指向 raw.githubusercontent.com）。
+
+    上游按下标 DEFAULT_MIRRORS[2] 取该镜像；本项目调整过内置镜像的顺序
+    （ghproxy-vip 提到首位、gitproxy-mrhjx 移出前列），下标不再稳定，
+    故改为按 id 查找，避免测试与镜像排序耦合。
+    """
+    return next(mirror for mirror in git_mirror_service.GitMirrorConfig.DEFAULT_MIRRORS if mirror["id"] == "github")
+
+
 @pytest.fixture
 def mirror_service(monkeypatch):
     monkeypatch.setattr(network_security, "_should_enforce_public_network", lambda _: True)
@@ -92,7 +102,7 @@ def test_builtin_raw_mirror_still_blocks_other_private_addresses(mirror_service,
 def test_invalid_custom_prefix_does_not_bypass_validation(mirror_service, monkeypatch, prefix):
     resolve_to(monkeypatch, "198.18.0.209")
     requests = mock_http(monkeypatch)
-    mirror = {**git_mirror_service.GitMirrorConfig.DEFAULT_MIRRORS[2], "raw_prefix": prefix}
+    mirror = {**_github_builtin_mirror(), "raw_prefix": prefix}
     result = asyncio.run(mirror_service._fetch_raw_from_mirror("a", "b", "main", "file", mirror))
     assert result["success"] is False
     assert not requests
@@ -124,7 +134,7 @@ def test_builtin_raw_redirect_is_not_followed(mirror_service, monkeypatch):
             "b",
             "main",
             "file",
-            git_mirror_service.GitMirrorConfig.DEFAULT_MIRRORS[2],
+            _github_builtin_mirror(),
         )
     )
     assert result["success"] is False
