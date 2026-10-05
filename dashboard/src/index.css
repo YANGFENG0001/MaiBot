@@ -250,11 +250,14 @@
 /* JetBrains Mono 字体 - 用于代码编辑器 */
 @keyframes config-tab-enter {
   from {
+    max-width: 0;
+    padding-inline: 0;
     opacity: 0;
-    transform: translateX(-0.5rem);
+    transform: translateX(-0.75rem);
   }
 
   to {
+    max-width: 16rem;
     opacity: 1;
     transform: translateX(0);
   }
@@ -703,19 +706,32 @@
   animation: future-retro-gear-rotate 150s linear infinite;
 }
 
+/* 偏移量按齿轮自身尺寸计算，避免竖屏下 vh 偏移大于 vw 尺寸导致齿轮整体移出画面 */
 .auth-retro-gear--primary {
-  left: max(-30rem, -32vw);
-  top: max(-24rem, -34vh);
-  width: min(72vw, 52rem);
+  --auth-gear-size: min(72vw, 52rem);
+  left: calc(var(--auth-gear-size) * -0.5);
+  top: calc(var(--auth-gear-size) * -0.36);
+  width: var(--auth-gear-size);
 }
 
 .auth-retro-gear--secondary {
-  right: max(-28rem, -30vw);
-  bottom: max(-30rem, -42vh);
-  width: min(84vw, 60rem);
+  --auth-gear-size: min(84vw, 60rem);
+  right: calc(var(--auth-gear-size) * -0.45);
+  bottom: calc(var(--auth-gear-size) * -0.4);
+  width: var(--auth-gear-size);
   opacity: 0.22;
   animation-duration: 210s;
   animation-direction: reverse;
+}
+
+@media (max-aspect-ratio: 3/4) {
+  .auth-retro-gear--primary {
+    --auth-gear-size: min(100vw, 52rem);
+  }
+
+  .auth-retro-gear--secondary {
+    --auth-gear-size: min(120vw, 60rem);
+  }
 }
 
 .auth-retro-gear__body {
@@ -1065,6 +1081,76 @@
 :root[data-dashboard-style='future-retro'] [data-dashboard-card='true'] > * {
   position: relative;
   z-index: 1;
+}
+
+/* 聊天监控里的推理卡片：去掉外框与装饰，只保留内容。
+   :root:root 提高优先级，压过未来复古主题对卡片边框的 !important 规则。 */
+:root:root [data-maisaka-trace-card='true'][data-dashboard-card='true'] {
+  border-width: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 用户发言气泡：无框线，深色底纹 */
+:root:root [data-maisaka-user-bubble='true'] {
+  border-width: 0 !important;
+  box-shadow: none !important;
+}
+
+:root:root[data-dashboard-style='future-retro'] [data-maisaka-user-bubble='true'] {
+  border-radius: 2px !important;
+  background-color: color-mix(in srgb, var(--retro-ink) 9%, transparent) !important;
+}
+
+/* 推理与推理、推理与消息之间的细横线（由时间线行统一绘制） */
+:root[data-dashboard-style='future-retro'] [data-maisaka-timeline-divider='true'] {
+  border-color: color-mix(in srgb, var(--retro-line) 45%, transparent) !important;
+}
+
+:root[data-dashboard-style='future-retro']
+  [data-maisaka-trace-card='true'][data-dashboard-card='true']::before,
+:root[data-dashboard-style='future-retro']
+  [data-maisaka-trace-card='true'][data-dashboard-card='true']::after {
+  display: none !important;
+  content: none !important;
+}
+
+[data-maisaka-trace-card='true'] > [data-dashboard-card-header='true'] {
+  padding-block: 0.5rem !important;
+  padding-inline: 0 !important;
+}
+
+/* 推理、工具等卡片的字号整体小一号。 */
+[data-maisaka-trace-card='true'] .text-sm {
+  font-size: 0.75rem !important;
+  line-height: 1.125rem !important;
+}
+
+[data-maisaka-trace-card='true'] .text-xs {
+  font-size: 0.6875rem !important;
+  line-height: 1rem !important;
+}
+
+[data-maisaka-trace-card='true'] .text-\[11px\] {
+  font-size: 0.625rem !important;
+}
+
+[data-maisaka-trace-card='true'] .text-\[10px\] {
+  font-size: 0.5625rem !important;
+}
+
+/* 卡片标题行里的徽章与按钮统一高度，且不带外框。 */
+:root:root
+  [data-maisaka-trace-meta='true']
+  > :is([data-dashboard-badge='true'], [data-dashboard-button='true']) {
+  box-sizing: border-box !important;
+  height: 1.375rem !important;
+  min-height: 1.375rem !important;
+  padding-block: 0 !important;
+  border-width: 0 !important;
+  box-shadow: none !important;
+  line-height: 1 !important;
 }
 
 [data-maibot-status-glow='true'] {
@@ -1425,6 +1511,13 @@
   background: transparent !important;
 }
 
+/* 顶部工作区标签（麦麦 / 日志）文字较短，左右边距收紧 */
+:root[data-dashboard-style='future-retro']
+  [data-dashboard-workspace-tabs='true']
+  [data-dashboard-tabs-trigger='true'] {
+  padding-inline: 0.7rem !important;
+}
+
 :root[data-dashboard-style='future-retro']
   [data-dashboard-workspace-tabs='true']
   [data-dashboard-tabs-trigger='true'][data-workspace-highlighted='true'] {
@@ -1573,12 +1666,32 @@
   box-shadow: none !important;
 }
 
+/* 未选中为描边凹陷方块，选中/半选才填充锈红，避免未选中看起来像已选中 */
 :root[data-dashboard-style='future-retro'] [data-dashboard-checkbox='true'] {
-  border: 0 !important;
+  border: var(--retro-stroke) solid var(--retro-line) !important;
   border-radius: 0 !important;
-  background: var(--retro-rust) !important;
+  background: var(--retro-recessed) !important;
   box-shadow: none !important;
   color: var(--retro-paper) !important;
+}
+
+:root[data-dashboard-style='future-retro']
+  [data-dashboard-checkbox='true']:is([data-state='checked'], [data-state='indeterminate']) {
+  border-color: var(--retro-rust) !important;
+  background: var(--retro-rust) !important;
+}
+
+:root[data-dashboard-style='future-retro']
+  [data-dashboard-checkbox='true'][data-state='indeterminate']
+  [data-dashboard-checkbox-indicator='true']::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 3px;
+  background: var(--retro-paper);
+  transform: translate(-50%, -50%);
 }
 
 :root[data-dashboard-style='future-retro'] [data-dashboard-checkbox='true']:focus-visible {
@@ -1953,15 +2066,24 @@
 :root[data-dashboard-style='future-retro']
   [data-dashboard-slider='config']
   [data-dashboard-slider-thumb='true'] {
-  min-width: 2.5rem !important;
-  height: 2rem !important;
+  min-width: 2rem !important;
+  height: 1.75rem !important;
   width: auto !important;
+  padding: 0 0.375rem !important;
+  font-size: 1rem;
 }
 
 :root[data-dashboard-style='future-retro']
   [data-dashboard-slider='config']
   [data-dashboard-slider-value='true'] {
   display: inline !important;
+  font-size: 1rem !important;
+}
+
+:root[data-dashboard-style='future-retro']
+  [data-dashboard-slider='config']
+  [data-dashboard-slider-value-tail='true'] {
+  font-size: 0.5rem;
 }
 
 :root[data-dashboard-style='future-retro'] [data-dashboard-nav-item='true'] {
@@ -2044,25 +2166,15 @@
   backdrop-filter: blur(10px) saturate(140%) !important;
 }
 
-:root[data-dashboard-style='future-retro'] [data-focus-companion='true'] .focus-local-glass {
-  background-color: rgb(255 246 230 / 68%);
-  box-shadow: none;
-  -webkit-backdrop-filter: blur(22px) !important;
-  backdrop-filter: blur(22px) !important;
-}
-
-:root[data-dashboard-style='future-retro'] [data-focus-companion='true'] .focus-local-glass-input {
-  background-color: rgb(255 246 230 / 58%);
-  -webkit-backdrop-filter: blur(16px) !important;
-  backdrop-filter: blur(16px) !important;
-}
-
 :root[data-dashboard-style='future-retro']
   [data-dashboard-shell='true']
   :is([class*='bg-gradient-'], [class*='from-'], [class*='via-'], [class*='to-']) {
   background-image: none !important;
 }
 
+/* 选中态（data-state="active"）的标签触发器不参与半透明底色压平：
+   否则铁锈红选中底色会被这里靠后的同优先级规则覆盖成近透明底，
+   配上纸色文字后几乎不可见。 */
 :root[data-dashboard-style='future-retro']
   [data-dashboard-shell='true']
   :is(
@@ -2070,7 +2182,7 @@
     [class*='bg-background/'],
     [class*='bg-muted/'],
     [class*='bg-popover/']
-  ) {
+  ):not([data-state='active']) {
   background-color: var(--retro-recessed) !important;
 }
 
@@ -2124,6 +2236,15 @@
 :root[data-dashboard-style='future-retro'] .bg-background,
 :root[data-dashboard-style='future-retro'] .bg-popover {
   background-color: transparent;
+}
+
+/* 模型表格操作列固定右缘、统计表名称列固定左缘：retro 主题下 .bg-background 为透明，需用纸面实色遮盖滚动内容。
+   放在 .bg-background 透明规则之后，避免被其覆盖。 */
+:root[data-dashboard-style='future-retro'] [data-model-config-action-cell='true'],
+:root[data-dashboard-style='future-retro'] [data-statistics-sticky-cell='true'] {
+  background-color: var(--retro-paper) !important;
+  background-image: var(--retro-paper-brightness-overlay), var(--retro-paper-texture) !important;
+  background-size: auto, var(--retro-paper-texture-size) !important;
 }
 
 :root[data-dashboard-style='future-retro'] .text-muted-foreground {
@@ -2215,6 +2336,16 @@
   width: 0.5rem;
   height: 0.5rem;
   background: var(--retro-paper);
+}
+
+/* 记忆记录行勾选后用锈红描边标出，需压过上面 .border 的统一线色 */
+:root[data-dashboard-style='future-retro'] [data-memory-record-row='true'] {
+  border-radius: 0 !important;
+}
+
+:root[data-dashboard-style='future-retro'] [data-memory-record-row='true'][data-checked='true'] {
+  border-color: var(--retro-rust) !important;
+  background: color-mix(in srgb, var(--retro-rust) 7%, transparent) !important;
 }
 
 /* Card carries Tailwind's border class, so keep its retro frame color after the generic border override. */
@@ -2610,6 +2741,13 @@
   padding-bottom: 0.625rem;
 }
 
+/* 记忆查询结果头部：单行「多选操作 + 计数小字」，收紧纵向留白，
+   让头部高度由控件决定而不是被内边距撑高 */
+.memory-console-density
+  [data-dashboard-card-header='true'][data-memory-records-result-header='true'] {
+  padding: 0.5rem 0.75rem;
+}
+
 .memory-console-density .space-y-4 > :not([hidden]) ~ :not([hidden]),
 .memory-console-density .space-y-5 > :not([hidden]) ~ :not([hidden]),
 .memory-console-density .space-y-6 > :not([hidden]) ~ :not([hidden]),
@@ -2673,6 +2811,13 @@
 
 .memory-console-density [data-dashboard-tabs-trigger='true'] {
   padding: 0.25rem 0.625rem;
+}
+
+/* 记忆控制台标签行：去掉列表纵向内边距，让标签铺满该行高度，
+   与同行右侧 2rem 高的「更多操作」按钮对齐 */
+.memory-console-density [data-memory-console-tab-row='true'] [data-dashboard-tabs-list='true'] {
+  gap: 0.25rem;
+  padding-block: 0;
 }
 
 .memory-console-density th {
@@ -2766,7 +2911,7 @@
   [data-dashboard-shell='true']
   [data-dashboard-feature-status-light='true'] {
   border: 0 !important;
-  border-radius: 9999px !important;
+  border-radius: 0 !important;
   box-shadow: none !important;
 }
 
@@ -2868,15 +3013,6 @@
   /* 鼠标设备：保留原有 hover 效果，无需额外处理 */
   .touch-device-only {
     display: none;
-  }
-}
-
-@keyframes chat-management-text-scroll {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(calc(var(--scroll-container-width) - 100%));
   }
 }
 
@@ -3031,8 +3167,12 @@
     [data-model-config-table-surface='true'] [data-dashboard-table-header='true'],
     [data-model-config-table-surface='true'] [data-dashboard-table-body='true'],
     [data-model-config-table-surface='true'] [data-dashboard-table-row='true'],
-    [data-model-config-table-surface='true'] [data-dashboard-table-head='true'],
-    [data-model-config-table-surface='true'] [data-dashboard-table-cell='true']
+    [data-model-config-table-surface='true'] [data-dashboard-table-head='true']:not(
+      [data-model-config-action-cell='true']
+    ),
+    [data-model-config-table-surface='true'] [data-dashboard-table-cell='true']:not(
+      [data-model-config-action-cell='true']
+    )
   ) {
   background: transparent !important;
   background-color: transparent !important;

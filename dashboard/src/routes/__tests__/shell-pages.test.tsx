@@ -112,7 +112,9 @@ describe('嵌入页转发壳', () => {
     [
       <PluginConfigEmbedPage key="config" />,
       'embed-plugin-config',
-      '插件管理 - MaiBot Dashboard',
+      // 上游把该页标题与侧边栏菜单名统一为「插件扩展」（sidebar.menu.pluginConfig），
+      // 但漏改此处旧期望「插件管理」。
+      '插件扩展 - MaiBot Dashboard',
       '插件配置内容',
     ],
     [

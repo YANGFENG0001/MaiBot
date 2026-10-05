@@ -1,4 +1,25 @@
 {
+  "pluginWebUI": {
+    "extensions": "Plugin extensions",
+    "manage": "Manage plugin pages",
+    "more": "More plugin workspaces",
+    "refresh": "Refresh",
+    "loading": "Loading…",
+    "empty": "No data",
+    "previous": "Previous",
+    "next": "Next",
+    "completed": "Operation completed",
+    "confirmTitle": "Confirm plugin operation",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "unavailable": "This page is offline or hidden.",
+    "invalidData": "Plugin data does not match the component declaration.",
+    "providedBy": "Provided by {{plugin}}",
+    "show": "Show pages from {{plugin}}",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "preferencesHint": "Visibility and order are saved in this browser and do not change backend permissions."
+  },
   "header": {
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
@@ -31,7 +52,6 @@
     },
     "menu": {
       "home": "Home",
-      "focusCompanion": "Focus Companion",
       "botMainConfig": "Bot Main Config",
       "aiModelProvider": "AI Model Providers",
       "modelManagement": "Model Management",
@@ -46,8 +66,8 @@
       "knowledgeBase": "Long-Term Memory",
       "pluginMarket": "Plugin Market",
       "configTemplate": "Config Templates",
-      "pluginConfig": "Plugin Management",
-      "adapterManagement": "Adapter Management",
+      "pluginConfig": "Plugin Extensions",
+      "adapterManagement": "Adapter Settings",
       "mcpSettings": "MCP Settings",
       "dataTransfer": "Data Management",
       "statistics": "Detailed Statistics",
@@ -95,6 +115,7 @@
       "distributions": "Distributions"
     },
     "breakdowns": {
+      "taskGroups": "By task group",
       "models": "By model",
       "modules": "By module",
       "requestTypes": "By request type",
@@ -176,9 +197,9 @@
   },
   "workspace": {
     "switcherLabel": "Switch MaiBot workspace",
-    "settings": "Mai Settings",
+    "settings": "Mai",
     "chat": "Mai Chat",
-    "logs": "Mai Logs"
+    "logs": "Logs"
   },
   "chat": {
     "botNameFallback": "Mai",
@@ -239,18 +260,26 @@
       "conversations": "Chat conversations",
       "emptyPreview": "No messages yet",
       "identityHint": "Local chat identity",
+      "myChats": "Chats with Mai",
+      "noSearchResults": "No matching chats",
       "newVirtual": "New virtual identity chat",
+      "observedAvatarAlt": "{{name}}'s avatar",
+      "observedBadge": "Observe",
+      "observedChats": "Mai's chat streams",
+      "openSettings": "Open chat settings for {{name}}",
       "online": "Online",
+      "searchPlaceholder": "Search chats…",
       "offline": "Offline",
       "subtitle": "{{count}} conversations",
       "title": "Chats",
       "virtualBadge": "Virtual",
-      "profileTitle": "My identity",
       "editAvatar": "Change avatar",
       "editName": "Edit nickname",
       "saveName": "Save",
       "savingAvatar": "Saving avatar",
-      "userAvatarAlt": "{{name}}'s avatar"
+      "userAvatarAlt": "{{name}}'s avatar",
+      "loadObservedChatsFailed": "Failed to load chat streams. Refresh to retry.",
+      "waitingObservedChats": "Waiting for chat streams…"
     },
     "dialog": {
       "create": "Create chat",
@@ -438,9 +467,7 @@
       "retroTextureNone": "None",
       "retroTextureIntensity": "Texture Strength",
       "retroPanelDepth": "Panel Depth",
-      "retroPanelDepthDesc": "Controls the visibility of recessed surfaces and shadows.",
-      "retroStrokeScale": "Stroke Weight",
-      "retroStrokeScaleDesc": "Adjusts the bold outlines used by cards and controls."
+      "retroPanelDepthDesc": "Controls the visibility of recessed surfaces and shadows."
     },
     "security": {
       "currentToken": "Current Access Token",
@@ -651,19 +678,19 @@
     "title": "Login",
     "description": "Enter your access token to continue",
     "tokenLabel": "Access Token",
-    "tokenPlaceholder": "Enter Access Token",
+    "tokenPlaceholder": "Enter access password",
     "loginButton": "Login",
     "loggingIn": "Logging in...",
     "loginFailed": "Login failed",
     "loginSuccess": "Login successful",
     "checkingAuth": "Checking login status...",
     "welcome": "Welcome to MaiBot",
-    "accessDesc": "Enter your Access Token to continue accessing the system",
-    "tokenRequired": "Please enter your Access Token",
+    "accessDesc": "Enter your access password to access MaiBot",
+    "tokenRequired": "Please enter your access password",
     "verifyingLabel": "Verifying...",
     "verifyEnter": "Verify & Enter",
     "helpLink": "I don't have a Token. Where can I get one?",
-    "helpTitle": "How to Get an Access Token",
+    "helpTitle": "Access Password",
     "helpDesc": "Access Token is the only credential to access MaiBot WebUI. Get yours in one of the following ways",
     "method1Title": "Method 1: Check Startup Log",
     "method1Desc": "When MaiBot starts, the console will display the WebUI Access Token.",
@@ -1036,9 +1063,8 @@
     "items": {
       "home": "Home",
       "homeDesc": "View dashboard overview",
-      "focusCompanionDesc": "Open MaiBot immersive focus companion",
       "botConfig": "Bot Main Config",
-      "botConfigDesc": "Configure bot core settings",
+      "botConfigDesc": "Configure bot settings and shared groups",
       "model": "Model Config",
       "modelDesc": "Configure model parameters",
       "promptGeneratorDesc": "Generate injectable persona config blocks from text",
@@ -1070,12 +1096,45 @@
     "navigatedTo": "Navigated to {{page}}"
   },
   "memory": {
+    "records": {
+      "status": {
+        "active": "Active",
+        "inactive": "Inactive",
+        "deleted": "Deleted",
+        "conflicted": "Conflicted",
+        "superseded": "Superseded",
+        "retracted": "Retracted"
+      },
+      "evidenceType": {
+        "paragraph": "Paragraph",
+        "relation": "Relation",
+        "entity": "Entity",
+        "fact": "Fact",
+        "episode": "Episode",
+        "profile": "Profile",
+        "manual": "Manual",
+        "unknown": "Unknown"
+      },
+      "evidenceStance": {
+        "support": "Support",
+        "refute": "Refute"
+      },
+      "graphJobStatus": {
+        "pending": "Pending",
+        "running": "Running",
+        "failed": "Failed",
+        "completed": "Completed",
+        "cancelled": "Cancelled"
+      }
+    },
     "tuning": {
       "task": {
         "title": "Tuning Task",
         "description": "Retrieval parameter evaluation"
       },
       "form": {
+        "parameters": "Tuning parameters",
+        "parametersDescription": "These settings affect only the next tuning task. The defaults are suitable for most cases.",
         "strategy": "Tuning Strategy",
         "objective": "Objective",
         "intensity": "Evaluation Depth",
@@ -1437,6 +1496,16 @@
       "hitTokens": "Hit Tokens",
       "missTokens": "Miss Tokens",
       "eligibleTokens": "{{value}} eligible tokens"
+    },
+    "news": {
+      "title": "News",
+      "description": "Latest news from the server",
+      "refresh": "Refresh news",
+      "retry": "Reload",
+      "open": "Open news details",
+      "openLink": "Open source link",
+      "pinned": "Pinned",
+      "empty": "No news yet"
     },
     "storage": {
       "title": "Storage Usage",

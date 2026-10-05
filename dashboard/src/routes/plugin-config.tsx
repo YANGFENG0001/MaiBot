@@ -66,6 +66,7 @@ import { RestartOverlay } from '@/components/restart-overlay'
 import { getLocalPluginChangelog, getLocalPluginReadme, getPluginRuntimeComponents } from '@/lib/plugin-api'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { PluginStats } from '@/components/plugin-stats'
+import { PluginWebUIManagerPanel } from '@/components/plugin-webui-manager'
 import type {
   InstalledPlugin,
   ConfigFieldSchema,
@@ -77,10 +78,12 @@ import type {
 import { PluginIcon } from './plugins/PluginIcon'
 import { getPluginType, getPluginTypeLabel } from './plugins/types'
 import { AdapterHostPolicyPanel } from './plugin-config/AdapterHostPolicyPanel'
+import { AdapterPolicyDefaultsCard } from './plugin-config/AdapterPolicyDefaultsCard'
 import { getNestedRecord, getPluginMarketplaceRoutePath, isAdapterManagementPath } from './plugin-config/utils'
 import { usePluginList } from './plugin-config/hooks/usePluginList'
 import { usePluginLifecycle } from './plugin-config/hooks/usePluginLifecycle'
 import { usePluginConfigEditor } from './plugin-config/hooks/usePluginConfigEditor'
+import { MCPExtensionList, MCPSettingsPage } from './mcp-settings'
 
 // 字段渲染组件
 interface FieldRendererProps {
@@ -400,7 +403,7 @@ function SectionRenderer({ sectionName, section, config, onChange }: SectionRend
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <Card>
         <CollapsibleTrigger asChild>
-          <CardHeader className="hover:bg-muted/50 cursor-pointer gap-0.5 px-4! py-2! transition-colors sm:px-4! sm:py-2!">
+          <CardHeader className="hover:bg-muted/50 cursor-pointer space-y-0 gap-0.5 px-4! py-1.5! transition-colors sm:px-4! sm:py-1.5!">
             <div className="flex items-center">
               <div className="flex min-w-0 items-center gap-2">
                 {isOpen ? (
@@ -1114,6 +1117,7 @@ function PluginConfigEditor({ plugin, onBack, initialTab }: PluginConfigEditorPr
   const { i18n } = useTranslation()
   const language = i18n.resolvedLanguage || i18n.language || 'zh'
   const [documentPanelOpen, setDocumentPanelOpen] = useState(false)
+  const [hostPolicyToolbar, setHostPolicyToolbar] = useState<HTMLDivElement | null>(null)
 
   const {
     editMode,
@@ -1311,11 +1315,15 @@ function PluginConfigEditor({ plugin, onBack, initialTab }: PluginConfigEditorPr
         value={pluginPageTab}
         onValueChange={(value) => setPluginPageTab(value as 'settings' | 'host-policy' | 'details')}
       >
-        <TabsList>
-          <TabsTrigger value="settings">设置</TabsTrigger>
-          {showHostPolicy && <TabsTrigger value="host-policy">黑白名单规则</TabsTrigger>}
-          <TabsTrigger value="details">详情</TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center gap-3">
+          <TabsList>
+            <TabsTrigger value="settings">设置</TabsTrigger>
+            {showHostPolicy && <TabsTrigger value="host-policy">黑白名单规则</TabsTrigger>}
+            <TabsTrigger value="details">详情</TabsTrigger>
+          </TabsList>
+          {/* 黑白名单页的账号与保存工具栏渲染到页签同一行，节省纵向空间 */}
+          {showHostPolicy && <div ref={setHostPolicyToolbar} className="min-w-0 flex-1" />}
+        </div>
         <TabsContent value="settings" className="mt-4">
           {/* 源代码模式 */}
           {editMode === 'source' && (
@@ -1400,7 +1408,7 @@ function PluginConfigEditor({ plugin, onBack, initialTab }: PluginConfigEditorPr
         </TabsContent>
         {showHostPolicy && (
           <TabsContent value="host-policy" className="mt-4">
-            <AdapterHostPolicyPanel pluginId={plugin.id} />
+            <AdapterHostPolicyPanel pluginId={plugin.id} toolbarContainer={hostPolicyToolbar} />
           </TabsContent>
         )}
         <TabsContent value="details" className="mt-4">
@@ -1493,6 +1501,7 @@ function PluginConfigPageContent() {
   const { themeConfig } = useTheme()
   const { triggerRestart, isRestarting } = useRestart()
   const adapterManagement = isAdapterManagementPath()
+  const [editingMCP, setEditingMCP] = useState(false)
 
   const {
     plugins,
@@ -1506,7 +1515,6 @@ function PluginConfigPageContent() {
     setSearchQuery,
     showUpdateOnly,
     setShowUpdateOnly,
-    visiblePlugins,
     visiblePluginGroups,
     actingPluginId,
     setActingPluginId,
@@ -1563,8 +1571,19 @@ function PluginConfigPageContent() {
   const isModernDashboardStyle = themeConfig.dashboardStyle === 'modern'
   const isFutureRetroDashboardStyle = themeConfig.dashboardStyle === 'future-retro'
   const [loadFailureDetailPlugin, setLoadFailureDetailPlugin] = useState<InstalledPlugin | null>(null)
+  const extensionGroups = [
+    ...visiblePluginGroups.filter((group) => group.key !== 'disabled'),
+    ...(!adapterManagement && !showUpdateOnly
+      ? [{ key: 'mcp', label: 'MCP 服务', dotClassName: '', plugins: [] }]
+      : []),
+    ...visiblePluginGroups.filter((group) => group.key === 'disabled'),
+  ]
 
-  // 如果选中了插件，显示配置编辑器
+  // 按扩展类型进入各自的配置编辑器。
+  if (editingMCP && !adapterManagement) {
+    return <MCPSettingsPage onBack={() => setEditingMCP(false)} />
+  }
+
   if (selectedPlugin) {
     return (
       <>
@@ -1591,7 +1610,7 @@ function PluginConfigPageContent() {
             <div className="relative min-w-0 flex-1 basis-0 sm:basis-72">
               <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
               <Input
-                placeholder="搜索插件..."
+                placeholder="搜索插件或 MCP 服务..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9"
@@ -1740,12 +1759,15 @@ function PluginConfigPageContent() {
           </div>
         )}
 
+        {/* 适配器全局默认策略（位于插件加载情况下方） */}
+        {adapterManagement && <AdapterPolicyDefaultsCard />}
+
         {/* 插件列表 */}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="text-muted-foreground h-8 w-8 animate-spin" />
           </div>
-        ) : visiblePlugins.length === 0 ? (
+        ) : extensionGroups.length === 0 ? (
           <div className="flex flex-col items-center justify-center space-y-4 py-12">
             <Package className="text-muted-foreground/50 h-16 w-16" />
             <div className="space-y-2 text-center">
@@ -1767,7 +1789,9 @@ function PluginConfigPageContent() {
           </div>
         ) : (
           <div className="space-y-4">
-            {visiblePluginGroups.map((group) => (
+            {extensionGroups.map((group) => group.key === 'mcp' ? (
+              <MCPExtensionList key="mcp" searchQuery={searchQuery} onEdit={() => setEditingMCP(true)} />
+            ) : (
               <section key={group.key} aria-labelledby={`plugin-list-group-${group.key}`}>
                 <div className="text-muted-foreground flex items-center gap-2 border-b px-2 pb-1.5 text-xs font-medium">
                   <span className={`h-2 w-2 rounded-full ${group.dotClassName}`} aria-hidden="true" />
@@ -1980,6 +2004,8 @@ function PluginConfigPageContent() {
             ))}
           </div>
         )}
+
+        {!adapterManagement && <PluginWebUIManagerPanel />}
 
         <Dialog
           open={loadFailureDetailPlugin !== null}

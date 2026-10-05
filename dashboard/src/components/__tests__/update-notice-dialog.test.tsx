@@ -301,14 +301,15 @@ describe('UpdateNoticeDialog', () => {
     expect(screen.queryByText('插件兼容性提醒')).toBeNull()
   })
 
-  it('前往插件管理会确认公告并跳转插件配置页', async () => {
+  // 上游把插件管理入口统一改名为「插件扩展」（按钮文案与侧边栏菜单一致），跳转目标仍是 /plugin-config。
+  it('前往插件扩展会确认公告并跳转插件配置页', async () => {
     vi.mocked(getUpdateNotice).mockResolvedValue(
       makeNotice({ incompatible_plugins: [makePlugin()] })
     )
     render(<UpdateNoticeDialog />)
 
     fireEvent.click(await screen.findByRole('button', { name: /知道了/ }))
-    fireEvent.click(await screen.findByRole('button', { name: /前往插件管理/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /前往插件扩展/ }))
 
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({ to: '/plugin-config' }))
     expect(ackUpdateNotice).toHaveBeenCalledTimes(1)

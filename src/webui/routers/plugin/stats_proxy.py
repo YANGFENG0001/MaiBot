@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from src.common.logger import get_logger
 from src.webui.dependencies import require_auth
+from src.webui.utils.http_client import get_shared_ssl_context
 
 logger = get_logger("webui.plugin_stats_proxy")
 router = APIRouter(dependencies=[Depends(require_auth)])
@@ -271,7 +272,11 @@ async def _remote_request(
 
     url = f"{PLUGIN_STATS_BASE_URL}{path}"
     try:
-        async with httpx.AsyncClient(timeout=PLUGIN_STATS_TIMEOUT) as client:
+        # 复用共享 SSLContext：每次新建 AsyncClient 都会重新加载整套 CA 证书（实测约 5s/次），
+        # 且该构造在 async 端点内是同步操作，会阻塞 WebUI 事件循环。
+        async with httpx.AsyncClient(
+            verify=get_shared_ssl_context(), timeout=PLUGIN_STATS_TIMEOUT
+        ) as client:
             response = await client.request(method, url, json=payload)
         if not response.is_success:
             logger.warning(f"远程插件统计不可用，改用本地统计: {url} - HTTP {response.status_code}")
