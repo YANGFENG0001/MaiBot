@@ -21,10 +21,12 @@ export function OperationsPage() {
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
 
-  const napCatWebUiUrl = useMemo(() => {
+  const snowLumaWebUiPort = overview?.services.snowluma?.webui_port ?? 6099
+
+  const snowLumaWebUiUrl = useMemo(() => {
     if (typeof window === 'undefined') return ''
-    return `${window.location.protocol}//${window.location.hostname}:6099/`
-  }, [])
+    return `${window.location.protocol}//${window.location.hostname}:${snowLumaWebUiPort}/`
+  }, [snowLumaWebUiPort])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -48,12 +50,12 @@ export function OperationsPage() {
   const handleSync = useCallback(async () => {
     setSyncing(true)
     try {
-      const result = await syncAdapterRuntime('maibot-team.napcat-adapter')
-      toast({ title: 'NapCat 配置同步完成', description: result.sync.message })
+      const result = await syncAdapterRuntime('maibot-team.snowluma-adapter')
+      toast({ title: 'SnowLuma 配置同步完成', description: result.sync.message })
       await refresh()
     } catch (error) {
       toast({
-        title: 'NapCat 配置同步失败',
+        title: 'SnowLuma 配置同步失败',
         description: error instanceof Error ? error.message : '未知错误',
         variant: 'destructive',
       })
@@ -62,7 +64,7 @@ export function OperationsPage() {
     }
   }, [refresh, toast])
 
-  const napcat = overview?.services.napcat
+  const snowluma = overview?.services.snowluma
   const enabledMirrors = overview?.mirrors.filter((mirror) => mirror.enabled) ?? []
 
   return (
@@ -98,26 +100,26 @@ export function OperationsPage() {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
-              <CardTitle className="flex items-center gap-2 text-lg"><Wifi className="h-5 w-5" />NapCat 适配器</CardTitle>
-              <Badge variant={statusVariant(napcat?.state ?? 'unreachable')}>
-                {napcat?.state === 'ready' ? '已连接' : napcat?.state === 'login_required' ? '等待登录' : '不可达'}
+              <CardTitle className="flex items-center gap-2 text-lg"><Wifi className="h-5 w-5" />SnowLuma 适配器</CardTitle>
+              <Badge variant={statusVariant(snowluma?.state ?? 'unreachable')}>
+                {snowluma?.state === 'ready' ? '已连接' : snowluma?.state === 'login_required' ? '等待登录' : '不可达'}
               </Badge>
             </div>
-            <CardDescription>{napcat?.diagnosis ?? '正在读取状态…'}</CardDescription>
+            <CardDescription>{snowluma?.diagnosis ?? '正在读取状态…'}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <div className="grid grid-cols-2 gap-2 text-muted-foreground">
-              <span>当前 QQ</span><span className="text-foreground">{napcat?.account || '未选择'}</span>
-              <span>OneBot Token</span><span className="font-mono text-foreground">{napcat?.onebot_token ?? '未读取'}</span>
-              <span>管理页 Token</span><span className="font-mono text-foreground">{napcat?.webui_token ?? '未读取'}</span>
+              <span>当前 QQ</span><span className="text-foreground">{snowluma?.account || '未选择'}</span>
+              <span>OneBot Token</span><span className="font-mono text-foreground">{snowluma?.onebot_token ?? '未读取'}</span>
+              <span>管理台端口</span><span className="font-mono text-foreground">{snowLumaWebUiPort}</span>
             </div>
-            {napcat && !napcat.onebot_token_consistent && (
+            {snowluma && !snowluma.onebot_token_consistent && (
               <p className="rounded-md bg-destructive/10 p-2 text-destructive">多个 OneBot 配置的 Token 不一致，请立即同步。</p>
             )}
             <div className="flex flex-wrap gap-2">
-              <Button asChild size="sm"><a href={napCatWebUiUrl} target="_blank" rel="noreferrer">NapCat WebUI<ExternalLink className="ml-2 h-4 w-4" /></a></Button>
+              <Button asChild size="sm"><a href={snowLumaWebUiUrl} target="_blank" rel="noreferrer">SnowLuma WebUI<ExternalLink className="ml-2 h-4 w-4" /></a></Button>
               <Button asChild size="sm" variant="outline"><Link to="/adapter-management">适配器设置</Link></Button>
-              <Button size="sm" variant="outline" onClick={() => void handleSync()} disabled={syncing || !napcat?.sync_supported}>
+              <Button size="sm" variant="outline" onClick={() => void handleSync()} disabled={syncing || !snowluma?.sync_supported}>
                 <RefreshCw className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />同步 Token
               </Button>
             </div>

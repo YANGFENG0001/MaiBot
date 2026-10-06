@@ -1,0 +1,49 @@
+# SnowLuma 协议端 overlay（与仓库 docker-compose.snowluma.yml 保持一致）
+#
+# 用法：docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
+#                      -f docker-compose.snowluma.yml -f docker-compose.local-patch.yml \
+#                      up -d core snowluma
+#
+# 说明：
+#   * SnowLuma 复用 NapCat 镜像（内含 /opt/QQ 客户端 + Xvfb + 容器伪装层），
+#     但 entrypoint 换成 snowluma-entrypoint.sh —— 伪装层与 Xvfb 逻辑照搬，
+#     仅把最后「启动 NapCat」换成「还原 QQ 官方入口 + 启动 QQ + 启动 SnowLuma」。
+#   * SnowLuma 通过 ptrace 把 native/snowluma-linux-x64.so 注入 QQ 进程，
+#     因此必须 cap_add: SYS_PTRACE（宿主机 yama ptrace_scope=1）。
+#   * 宿主端口沿用 NapCat 时代的 6099（云安全组已放行），映射到 SnowLuma WebUI 的 5099。
+#   * 原 napcat 服务已从 docker-compose.yml 移除；本 overlay 取代其位置。
+#   * QQ 号不写进仓库：在部署根目录放一个 .env（已被 .gitignore 忽略），内容形如
+#       SNOWLUMA_ACCOUNT=123456789
+#     不填则 ACCOUNT 为空，QQ 客户端会停在扫码登录界面。
+services:
+  core:
+    environment:
+      # 让运行中心的「同步 Token」能找到 SnowLuma 的运行时配置目录
+      - MAIBOT_SNOWLUMA_CONFIG_DIR=/MaiMBot/adapters-config/snowluma/config
+    volumes:
+      # SnowLuma 把配置写在自身运行根目录的 config/ 下，这里透出给 core 读取/同步
+      - ./data/snowluma/config:/MaiMBot/adapters-config/snowluma/config
+
+  snowluma:
+    image: mlikiowa/napcat-docker:v4.18.30
+    container_name: maim-bot-snowluma
+    restart: always
+    entrypoint: ["/bin/bash", "/app/snowluma-entrypoint.sh"]
+    environment:
+      - ACCOUNT=${SNOWLUMA_ACCOUNT:-}
+      - NAPCAT_UID=0
+      - NAPCAT_GID=0
+      - TZ=Asia/Shanghai
+      - XDG_RUNTIME_DIR=/tmp/snowluma-runtime
+    cap_add:
+      - SYS_PTRACE
+    ports:
+      - "6099:5099"   # SnowLuma WebUI（管理台），对外沿用 6099
+      - "3001:3001"   # OneBot v11 WebSocket（适配器连这里）
+    volumes:
+      - ./docker/snowluma/snowluma-entrypoint.sh:/app/snowluma-entrypoint.sh:ro
+      - ./data/snowluma:/app/snowluma          # SnowLuma 运行时本体（含 config/ logs/）
+      - ./data/qq:/app/.config/QQ              # QQ 客户端数据目录
+      - ./data/MaiMBot:/MaiMBot/data           # 与 core 共享目录
+    networks:
+      - maim_bot
