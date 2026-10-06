@@ -7,17 +7,17 @@ export interface OperationMirror {
   priority: number
 }
 
-export interface NapCatOperationStatus {
+export interface SnowLumaOperationStatus {
   id: string
   name: string
   state: 'ready' | 'login_required' | 'unreachable'
   websocket_ready: boolean
   webui_ready: boolean
+  webui_port: number
   diagnosis: string
   runtime_mounted: boolean
   runtime_root: string
   account: string
-  webui_token: string
   onebot_token: string
   onebot_token_consistent: boolean
   onebot_config_count: number
@@ -28,7 +28,7 @@ export interface OperationsOverview {
   success: boolean
   services: {
     maibot: { state: string; name: string }
-    napcat: NapCatOperationStatus
+    snowluma: SnowLumaOperationStatus
   }
   mirrors: OperationMirror[]
   security: { container_control_available: boolean; message: string }

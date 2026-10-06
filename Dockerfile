@@ -28,7 +28,9 @@ RUN python -m playwright install-deps chromium \
 # so the runtime image serves a WebUI from the same source revision as the backend.
 COPY . .
 
-RUN git clone --depth 1 --branch main https://github.com/Mai-with-u/MaiBot-Napcat-Adapter.git plugin-templates/MaiBot-Napcat-Adapter
+# Bundle the adapter plugin that matches the shipped protocol implementation.
+# 目录名即插件在 /MaiMBot/plugins 下的落地名，entrypoint 会整体复制过去。
+RUN git clone --depth 1 --branch main https://github.com/Mai-with-u/MaiBot-SnowLuma-Adapter.git plugin-templates/snowluma-adapter
 RUN chmod +x docker-entrypoint.sh
 
 EXPOSE 8000 8001

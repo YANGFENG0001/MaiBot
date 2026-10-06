@@ -41,10 +41,13 @@ _BUILTIN_PROFILES = (
     ),
     AdapterSyncProfile(
         plugin_id="maibot-team.snowluma-adapter",
-        config_section="luma_client",
+        # snowluma-adapter v1.1.1 的正式段名是 [client]；
+        # luma_client / napcat_server / connection 仅作为历史配置的迁移来源保留。
+        config_section="client",
         runtime_root_env="MAIBOT_SNOWLUMA_CONFIG_DIR",
+        # SnowLuma 把配置写在自身运行根目录的 config/ 下，容器化时挂载进 core。
         runtime_root_candidates=("/MaiMBot/adapters-config/snowluma/config", "/MaiMBot/adapters-config/snowluma"),
-        runtime_globs=("onebot_*.json",),
+        runtime_globs=("*.json", "**/*.json"),
         runtime_kind="snowluma-onebot",
     ),
 )
@@ -52,9 +55,7 @@ _BUILTIN_PROFILES = (
 
 def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_path = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    descriptor, temporary_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file_obj:
             json.dump(data, file_obj, ensure_ascii=False, indent=2)
@@ -234,7 +235,8 @@ class AdapterConfigSyncService:
             "supported": True,
             "available": True,
             "runtime_root": str(root),
-            "checked_paths": [str(path) for path in runtime_files] + ([str(root / "webui.json")] if profile.runtime_kind == "napcat-onebot11" else []),
+            "checked_paths": [str(path) for path in runtime_files]
+            + ([str(root / "webui.json")] if profile.runtime_kind == "napcat-onebot11" else []),
             "changed_paths": changed_paths,
             "message": "适配器运行时配置已同步" if changed_paths else "适配器运行时 Token 已一致",
         }
