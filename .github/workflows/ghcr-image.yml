@@ -15,6 +15,9 @@ on:
       - "uv.lock"
       - "bot.py"
       - "src/**"
+      # 镜像里的 WebUI 产物由本工作流现场 `bun run build` 生成后再 `COPY . .` 进镜像，
+      # 所以 dashboard 的改动同样必须触发重建；否则纯前端改动永远上不了线。
+      - "dashboard/**"
       - "plugins/**"
       - "locales/**"
       - "prompts/**"
