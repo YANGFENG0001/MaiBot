@@ -1,0 +1,39 @@
+name: WebUI Tests
+
+# 为什么需要这个 workflow：
+# 在这之前，CI 里没有任何 workflow 跑 `pytests/webui` ——
+# `check-webui.yml` 只跑 `dashboard/`（bun），`ruff-pr.yml` / `ruff.yml` 只跑 ruff，
+# 唯一跑 pytest 的 `a-memorix-tests.yml` 只跑 `pytests/A_memorix_test`。
+# 结果是这个套件（约 400 个用例）可以静默腐烂：PR #4 把适配器同步段名从
+# `luma_client` 改成 `client` 之后，对应用例一直是红的，却没有任何人看到。
+#
+# 刻意不设 `paths` 过滤：WebUI 用例会跨目录 import（src/config、src/chat、
+# src/maisaka 等），收窄 paths 只会让「改了别处、这里悄悄坏掉」重演。
+# 整套跑完约 1 分钟，值得。
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: 安装项目依赖
+        # 用 --frozen 与 a-memorix-tests.yml 保持一致：lock 是否最新由
+        # precheck.yml 的 lock-check job 单独把关，避免两处因同一原因一起变红。
+        run: uv sync --frozen --group dev
+      - name: 运行 WebUI 测试
+        # 保留 `python -m pytest`：即使 pyproject 已配置 pythonpath，显式走模块入口
+        # 也能确保仓库根目录进入 sys.path，避免收集阶段报 ModuleNotFoundError。
+        run: uv run python -m pytest -q pytests/webui

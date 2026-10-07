@@ -222,7 +222,13 @@ def test_get_plugin_icon_rejects_manifest_declared_parent_path(client: TestClien
     assert response.status_code == 400
 
 
-def test_install_plugin_preserves_manifest_declared_id(client: TestClient, monkeypatch):
+def test_install_plugin_rejects_manifest_id_mismatch(client: TestClient, monkeypatch):
+    """清单声明的 id 与请求的 plugin_id 不一致时必须拒绝安装。
+
+    早期实现是「以清单为准」——按清单里的 id 落盘，于是可以用 A 的身份
+    安装 B 的代码。现在改为以请求的 plugin_id 为准并要求两者一致。
+    """
+
     class FakeGitMirrorService:
         async def clone_repository(self, **kwargs):
             target_path = kwargs["target_path"]
@@ -252,14 +258,13 @@ def test_install_plugin_preserves_manifest_declared_id(client: TestClient, monke
         },
     )
 
-    assert response.status_code == 200
-    plugin_path = support_module.resolve_installed_plugin_path("author.declared")
-    assert plugin_path is not None
-    manifest = json.loads((plugin_path / "_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["id"] == "author.declared"
+    assert response.status_code == 400
+    assert "插件 ID 不匹配" in response.json()["detail"]
 
 
-def test_install_plugin_backfills_missing_manifest_id(client: TestClient, monkeypatch):
+def test_install_plugin_rejects_manifest_missing_id(client: TestClient, monkeypatch):
+    """清单缺少 id 时直接拒绝，不再用请求里的 plugin_id 回填。"""
+
     class FakeGitMirrorService:
         async def clone_repository(self, **kwargs):
             target_path = kwargs["target_path"]
@@ -288,11 +293,8 @@ def test_install_plugin_backfills_missing_manifest_id(client: TestClient, monkey
         },
     )
 
-    assert response.status_code == 200
-    plugin_path = support_module.resolve_installed_plugin_path("market.legacy")
-    assert plugin_path is not None
-    manifest = json.loads((plugin_path / "_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["id"] == "market.legacy"
+    assert response.status_code == 400
+    assert "缺少必需字段: id" in response.json()["detail"]
 
 
 def test_install_plugin_cleans_config_only_residue(client: TestClient, monkeypatch):

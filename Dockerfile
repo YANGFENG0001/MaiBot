@@ -17,6 +17,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install runtime dependencies
+# 依赖统一走 pyproject.toml 里配置的 aliyun 镜像（index-strategy = unsafe-first-match
+# 会优先命中它）。从 GitHub 的 runner 拉大 wheel（faiss-cpu、maibot-dashboard）时
+# 偶发读超时，默认 UV_HTTP_TIMEOUT=30s / UV_HTTP_RETRIES=3 会让整次构建直接失败
+# （2026-10-07 实测过一次，重跑即过）。这里放宽，避免偶发慢速把镜像构建打红。
+ENV UV_HTTP_TIMEOUT=300 \
+    UV_HTTP_RETRIES=10
+
 RUN uv sync --locked --no-dev --no-install-project
 
 # Install system libraries required by Playwright Chromium. The browser binary
