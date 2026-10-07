@@ -136,9 +136,8 @@ def test_write_keeps_runtime_config_mode(tmp_path: Path, monkeypatch) -> None:
         {"client": {"port": 3001, "token": "snow-token"}},
     )
 
-    assert json.loads(onebot_path.read_text(encoding="utf-8"))["networks"]["wsServers"][0][
-        "accessToken"
-    ] == "snow-token"
+    saved = json.loads(onebot_path.read_text(encoding="utf-8"))
+    assert saved["networks"]["wsServers"][0]["accessToken"] == "snow-token"
     assert stat.S_IMODE(onebot_path.stat().st_mode) == 0o644
 
 
