@@ -1,8 +1,7 @@
-# SnowLuma 协议端 overlay（与仓库 docker-compose.snowluma.yml 保持一致）
+# SnowLuma 协议端 overlay
 #
 # 用法：docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
-#                      -f docker-compose.snowluma.yml -f docker-compose.local-patch.yml \
-#                      up -d core snowluma
+#                      -f docker-compose.snowluma.yml up -d core snowluma
 #
 # 说明：
 #   * SnowLuma 复用 NapCat 镜像（内含 /opt/QQ 客户端 + Xvfb + 容器伪装层），
@@ -10,7 +9,10 @@
 #     仅把最后「启动 NapCat」换成「还原 QQ 官方入口 + 启动 QQ + 启动 SnowLuma」。
 #   * SnowLuma 通过 ptrace 把 native/snowluma-linux-x64.so 注入 QQ 进程，
 #     因此必须 cap_add: SYS_PTRACE（宿主机 yama ptrace_scope=1）。
-#   * 宿主端口沿用 NapCat 时代的 6099（云安全组已放行），映射到 SnowLuma WebUI 的 5099。
+#   * 管理台只绑本机 5099，**对外 6099 交给宿主机 nginx 反代**（配置见部署根目录
+#     docker/snowluma/nginx-snowluma-console.conf）。这样做的原因：SnowLuma 控制台
+#     是单页应用，只有根路径 `/` 有效，而旧 NapCat 控制台的 `/webui/web_login`
+#     等地址还留在用户书签里 —— nginx 可以把这些旧地址 302 回 `/`，容器自己做不到。
 #   * 原 napcat 服务已从 docker-compose.yml 移除；本 overlay 取代其位置。
 #   * QQ 号不写进仓库：在部署根目录放一个 .env（已被 .gitignore 忽略），内容形如
 #       SNOWLUMA_ACCOUNT=123456789
@@ -38,8 +40,10 @@ services:
     cap_add:
       - SYS_PTRACE
     ports:
-      - "6099:5099"   # SnowLuma WebUI（管理台），对外沿用 6099
-      - "3001:3001"   # OneBot v11 WebSocket（适配器连这里）
+      # 只绑本机：对外 6099 由 nginx 反代（见文件头说明）。
+      # 宿主 5099 未被占用，且不与 nginx 的 0.0.0.0:6099 冲突。
+      - "127.0.0.1:5099:5099"   # SnowLuma WebUI（管理台）
+      - "3001:3001"             # OneBot v11 WebSocket（适配器连这里）
     volumes:
       - ./docker/snowluma/snowluma-entrypoint.sh:/app/snowluma-entrypoint.sh:ro
       - ./data/snowluma:/app/snowluma          # SnowLuma 运行时本体（含 config/ logs/）
