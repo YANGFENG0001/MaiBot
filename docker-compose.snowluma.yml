@@ -1,53 +1,69 @@
-# SnowLuma 协议端 overlay
+# SnowLuma 协议端 overlay（官方镜像）
 #
 # 用法：docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
 #                      -f docker-compose.snowluma.yml up -d core snowluma
 #
 # 说明：
-#   * SnowLuma 复用 NapCat 镜像（内含 /opt/QQ 客户端 + Xvfb + 容器伪装层），
-#     但 entrypoint 换成 snowluma-entrypoint.sh —— 伪装层与 Xvfb 逻辑照搬，
-#     仅把最后「启动 NapCat」换成「还原 QQ 官方入口 + 启动 QQ + 启动 SnowLuma」。
-#   * SnowLuma 通过 ptrace 把 native/snowluma-linux-x64.so 注入 QQ 进程，
-#     因此必须 cap_add: SYS_PTRACE（宿主机 yama ptrace_scope=1）。
-#   * 管理台只绑本机 5099，**对外 6099 交给宿主机 nginx 反代**（配置见部署根目录
-#     docker/snowluma/nginx-snowluma-console.conf）。这样做的原因：SnowLuma 控制台
-#     是单页应用，只有根路径 `/` 有效，而旧 NapCat 控制台的 `/webui/web_login`
-#     等地址还留在用户书签里 —— nginx 可以把这些旧地址 302 回 `/`，容器自己做不到。
-#   * 原 napcat 服务已从 docker-compose.yml 移除；本 overlay 取代其位置。
-#   * QQ 号不写进仓库：在部署根目录放一个 .env（已被 .gitignore 忽略），内容形如
-#       SNOWLUMA_ACCOUNT=123456789
-#     不填则 ACCOUNT 为空，QQ 客户端会停在扫码登录界面。
+#   * 协议端直接用 SnowLuma 官方 Docker 镜像（内置 Linux QQ + Xvfb + VNC/noVNC
+#     + supervisord + SnowLuma 运行时），**不再依赖任何第三方镜像底座**，
+#     因此也不需要自定义 entrypoint 去还原 QQ 官方入口。
+#     官方文档：https://snowluma.github.io/zh/docs/guide/deploy/docker
+#   * SnowLuma 通过 ptrace 把 hook 注入 QQ 进程，因此必须
+#     cap_add: SYS_PTRACE 且 security_opt: seccomp=unconfined（后者不能省，
+#     默认 seccomp profile 会拦截 ptrace）。
+#   * 管理台只绑本机 5099，**对外 6099 交给宿主机 nginx 反代**（配置见
+#     docker/snowluma/nginx-snowluma-console.conf）。这样做是因为管理台是单页应用，
+#     只有根路径 `/` 有效，而旧协议端控制台的历史地址（/webui/web_login 之类）
+#     还留在用户书签里 —— nginx 可以把这些旧地址 302 回 `/`，容器自己做不到。
+#   * noVNC（容器 6081）同样只绑本机：扫码时开一条 SSH 隧道
+#       ssh -L 6081:127.0.0.1:6081 root@<服务器>
+#     然后浏览器打开 http://127.0.0.1:6081/ ，远程桌面密码见
+#       docker logs maim-bot-snowluma 2>&1 | grep -E "远程桌面密码:|remote desktop password:"
+#     （不设 VNC_PASSWD 时首次启动随机生成，只在日志里打印一次，并持久化在数据卷里）
 services:
   core:
     environment:
       # 让运行中心的「同步 Token」能找到 SnowLuma 的运行时配置目录
       - MAIBOT_SNOWLUMA_CONFIG_DIR=/MaiMBot/adapters-config/snowluma/config
     volumes:
-      # SnowLuma 把配置写在自身运行根目录的 config/ 下，这里透出给 core 读取/同步
+      # SnowLuma 把配置写在自身数据目录的 config/ 下，这里透出给 core 读取/同步
       - ./data/snowluma/config:/MaiMBot/adapters-config/snowluma/config
 
   snowluma:
-    image: mlikiowa/napcat-docker:v4.18.30
+    image: motricseven7/snowluma:latest
     container_name: maim-bot-snowluma
     restart: always
-    entrypoint: ["/bin/bash", "/app/snowluma-entrypoint.sh"]
-    environment:
-      - ACCOUNT=${SNOWLUMA_ACCOUNT:-}
-      - NAPCAT_UID=0
-      - NAPCAT_GID=0
-      - TZ=Asia/Shanghai
-      - XDG_RUNTIME_DIR=/tmp/snowluma-runtime
+    # QQ 基于 Chromium，容器默认 64MB /dev/shm 偏小会让它崩；
+    # 但本机内存只有 1.6G，也不能照抄官方模板的 1g，取 256m 折中。
+    shm_size: 256m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
     cap_add:
       - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      - TZ=Asia/Shanghai
+      # 容器内 snowluma 用户 uid/gid，必须与下面 bind mount 的宿主属主一致
+      - SNOWLUMA_UID=1000
+      - SNOWLUMA_GID=1000
+      - SNOWLUMA_WEBUI_HOST=0.0.0.0
+      - SNOWLUMA_WEBUI_PORT=5099
+      - SNOWLUMA_LOG_LEVEL=info
+      - SNOWLUMA_SCREEN=1280x800x24
+      - SNOWLUMA_HOOK_AUTOLOAD=1
+      - SNOWLUMA_QQ_FLAGS=--disable-gpu --disable-software-rasterizer --disable-gpu-compositing
     ports:
       # 只绑本机：对外 6099 由 nginx 反代（见文件头说明）。
       # 宿主 5099 未被占用，且不与 nginx 的 0.0.0.0:6099 冲突。
-      - "127.0.0.1:5099:5099"   # SnowLuma WebUI（管理台）
+      - "127.0.0.1:5099:5099"   # SnowLuma 管理台
+      - "127.0.0.1:6081:6081"   # noVNC 远程桌面（扫码用，仅本机 + SSH 隧道）
       - "3001:3001"             # OneBot v11 WebSocket（适配器连这里）
     volumes:
-      - ./docker/snowluma/snowluma-entrypoint.sh:/app/snowluma-entrypoint.sh:ro
-      - ./data/snowluma:/app/snowluma          # SnowLuma 运行时本体（含 config/ logs/）
-      - ./data/qq:/app/.config/QQ              # QQ 客户端数据目录
-      - ./data/MaiMBot:/MaiMBot/data           # 与 core 共享目录
+      - ./data/snowluma:/app/data           # SnowLuma 配置 / 缓存 / SDB
+      - ./data/qq:/app/.config              # QQ 客户端配置（QQ/ 子目录）
+      - ./data/qq-local:/app/.local/share   # QQ 用户数据（登录态）
     networks:
       - maim_bot
