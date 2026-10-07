@@ -24,6 +24,19 @@ logger = get_logger("webui.adapter_config_sync")
 # 目的是让「统一令牌」这件事在服务器上只依赖一处声明，避免被插件页误改。
 MANAGED_TOKEN_ENV = "MAIBOT_SNOWLUMA_ONEBOT_TOKEN"
 
+# 逃生阀：协议端若换回**不认识** ``SNOWLUMA_ONEBOT_TOKEN`` 的镜像（例如官方
+# ``motricseven7/snowluma:latest``），环境变量覆盖就不存在了，此时必须恢复
+# 「漂移后要重启」的保守提示。把它设为 0/false/no/off 即可。
+TOKEN_FROM_ENV_ENV = "MAIBOT_SNOWLUMA_TOKEN_FROM_ENV"
+
+_FALSY_FLAGS = {"0", "false", "no", "off"}
+
+
+def _token_from_env_allowed() -> bool:
+    """协议端是否确实会从环境变量读取令牌（默认是，可用逃生阀关掉）。"""
+
+    return os.getenv(TOKEN_FROM_ENV_ENV, "").strip().lower() not in _FALSY_FLAGS
+
 
 @dataclass(frozen=True)
 class AdapterSyncProfile:
@@ -35,6 +48,10 @@ class AdapterSyncProfile:
     runtime_root_candidates: tuple[str, ...]
     runtime_globs: tuple[str, ...]
     runtime_kind: str
+    # 协议端运行时读取 OneBot 令牌所用的环境变量名（配置文件只是兜底）。
+    # 非空即表示「运行时支持环境变量覆盖令牌」：这种情况下改写运行时文件
+    # 不会影响进程实际生效的令牌，因此不需要重启协议端。
+    token_env_var: str = ""
 
 
 _BUILTIN_PROFILES = (
@@ -48,6 +65,9 @@ _BUILTIN_PROFILES = (
         runtime_root_candidates=("/MaiMBot/adapters-config/snowluma/config", "/MaiMBot/adapters-config/snowluma"),
         runtime_globs=("*.json", "**/*.json"),
         runtime_kind="snowluma-onebot",
+        # 自建镜像（YANGFENG0001/SnowLuma fork）在 loadOneBotConfig() 收尾处叠加
+        # SNOWLUMA_ONEBOT_HOST / SNOWLUMA_ONEBOT_TOKEN，只在内存生效、不落盘。
+        token_env_var="SNOWLUMA_ONEBOT_TOKEN",
     ),
 )
 
@@ -111,6 +131,7 @@ def _profile_from_dict(raw: Dict[str, Any]) -> AdapterSyncProfile:
         runtime_root_candidates=tuple(str(item) for item in raw.get("runtime_root_candidates", [])),
         runtime_globs=tuple(str(item) for item in raw.get("runtime_globs", [])),
         runtime_kind=str(raw["runtime_kind"]),
+        token_env_var=str(raw.get("token_env_var", "")),
     )
 
 
@@ -230,12 +251,20 @@ class AdapterConfigSyncService:
 
         return "", "unset"
 
-    def enforce_runtime_token(self, plugin_id: str, token: str) -> Dict[str, Any]:
+    def enforce_runtime_token(self, plugin_id: str, token: str, *, token_source: str = "") -> Dict[str, Any]:
         """把权威令牌强制写入适配器运行时配置（幂等）。
 
         与 :meth:`sync_from_plugin_config` 的区别：这里不读插件配置、不校验端口，
         只做「MaiBot 侧说了算」的覆盖，供启动自检与运行中心巡检调用；
         即使 SnowLuma 自行重新生成了随机令牌，也会被拉回权威值。
+
+        ``token_source`` 是 :meth:`resolve_managed_token` 给出的令牌来源。只有当它
+        是 ``environment`` 时才认定「协议端也从环境变量读取令牌」——因为 compose
+        用**同一个** ``MAIBOT_SNOWLUMA_ONEBOT_TOKEN`` 变量、同一个 ``:?`` 守卫分别
+        注入 core 与协议端：变量在 core 侧解析得出来，协议端侧就必然也被注入。
+        令牌来自插件配置时不做这个假设，保守地照旧提示重启；换回官方镜像这类
+        「协议端不认识该环境变量」的部署，可用 ``MAIBOT_SNOWLUMA_TOKEN_FROM_ENV=0``
+        关掉这条捷径。
         """
 
         profile = self.get_profile(plugin_id)
@@ -263,6 +292,10 @@ class AdapterConfigSyncService:
                 "message": "未挂载适配器运行时配置目录；无法强制同步外部适配器",
             }
 
+        # 协议端支持从环境变量读令牌时，磁盘上的令牌写错也影响不了进程实际行为，
+        # 于是「漂移 → 改回 → 重启」这条链被彻底切断：改回即可，无需重启。
+        token_from_env = bool(profile.token_env_var) and token_source == "environment" and _token_from_env_allowed()
+
         runtime_files = self._iter_runtime_files(root, profile.runtime_globs)
         changed_paths: List[str] = []
         for runtime_file in runtime_files:
@@ -279,15 +312,23 @@ class AdapterConfigSyncService:
                 _write_json_atomic(runtime_file, data)
                 changed_paths.append(str(runtime_file))
 
+        if not changed_paths:
+            message = "适配器运行时 Token 已一致"
+        elif token_from_env:
+            message = f"已强制同步适配器运行时 Token；协议端从 {profile.token_env_var} 读取令牌，无需重启"
+        else:
+            message = "已强制同步适配器运行时 Token"
+
         return {
             "supported": True,
             "enforced": True,
             "runtime_root": str(root),
             "checked_paths": [str(path) for path in runtime_files],
             "changed_paths": changed_paths,
-            # 运行时文件被改写时，协议端进程仍持有旧令牌，必须重启才生效。
-            "restart_required": bool(changed_paths),
-            "message": "已强制同步适配器运行时 Token" if changed_paths else "适配器运行时 Token 已一致",
+            # 运行时从环境变量读令牌 ⇒ 文件被改写不影响进程持有的令牌，不必重启。
+            "token_from_env": token_from_env,
+            "restart_required": bool(changed_paths) and not token_from_env,
+            "message": message,
         }
 
     def sync_from_plugin_config(self, plugin_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
