@@ -13,9 +13,15 @@ import json
 import os
 import tempfile
 
+import tomlkit
+
 from src.common.logger import get_logger
 
 logger = get_logger("webui.adapter_config_sync")
+
+# 运维硬锁定：一旦设置，OneBot 令牌以该环境变量为准，且不再回落到插件配置。
+# 目的是让「统一令牌」这件事在服务器上只依赖一处声明，避免被插件页误改。
+MANAGED_TOKEN_ENV = "MAIBOT_SNOWLUMA_ONEBOT_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -117,21 +123,138 @@ class AdapterConfigSyncService:
         return sorted(files)
 
     @staticmethod
-    def _update_snowluma(data: Dict[str, Any], token: str, port: int) -> bool:
-        changed = False
+    def _update_snowluma(data: Dict[str, Any], token: str) -> bool:
+        """把权威令牌写入 SnowLuma 运行时配置。
+
+        SnowLuma 会在 ``wsServers``（MaiBot 反连的 WebSocket）与 ``httpServers``
+        （HTTP API）两个集合里各存一份 ``accessToken``。历史实现只覆盖
+        ``wsServers`` 里端口匹配的那一条，于是两份令牌长期各走各的，
+        运行中心一直报「Token 不一致」。这里按「统一托管」的语义同时覆盖
+        两个集合的全部条目，令牌一旦漂移就被拉回。
+        """
+
         networks = data.get("networks")
         if not isinstance(networks, dict):
             return False
-        servers = networks.get("wsServers")
-        if not isinstance(servers, list):
-            return False
-        for server in servers:
-            if not isinstance(server, dict) or int(server.get("port") or 0) != port:
+        changed = False
+        for collection_name in ("wsServers", "httpServers"):
+            collection = networks.get(collection_name)
+            if not isinstance(collection, list):
                 continue
-            if server.get("accessToken") != token:
-                server["accessToken"] = token
-                changed = True
+            for server in collection:
+                if not isinstance(server, dict):
+                    continue
+                if server.get("accessToken") != token:
+                    server["accessToken"] = token
+                    changed = True
         return changed
+
+    def _read_plugin_token(self, plugin_id: str) -> str:
+        """读取适配器插件配置里的连接令牌。"""
+
+        profile = self.get_profile(plugin_id)
+        if profile is None:
+            return ""
+
+        try:
+            # 延迟导入：插件路由模块会反过来引用本服务，放在模块顶部会形成循环。
+            from src.webui.routers.plugin.support import find_plugin_path_by_id
+
+            plugin_path = find_plugin_path_by_id(plugin_id)
+            if plugin_path is None:
+                return ""
+            config_path = plugin_path / "config.toml"
+            if not config_path.exists():
+                return ""
+            with open(config_path, "r", encoding="utf-8") as file_obj:
+                config = tomlkit.load(file_obj).unwrap()
+        except Exception as exc:
+            logger.warning(f"读取适配器插件 Token 失败: {plugin_id} ({exc})")
+            return ""
+
+        if not isinstance(config, dict):
+            return ""
+        section = config.get(profile.config_section)
+        if not isinstance(section, dict):
+            return ""
+        return str(section.get("token") or "").strip()
+
+    def resolve_managed_token(self, plugin_id: str) -> tuple[str, str]:
+        """解析权威 OneBot 令牌及其来源。
+
+        优先级：``MAIBOT_SNOWLUMA_ONEBOT_TOKEN`` 环境变量（运维硬锁定，优先级最高，
+        避免被插件页误改） → 适配器插件 ``config.toml`` 的连接令牌。
+        """
+
+        env_token = os.getenv(MANAGED_TOKEN_ENV, "").strip()
+        if env_token:
+            return env_token, "environment"
+
+        plugin_token = self._read_plugin_token(plugin_id)
+        if plugin_token:
+            return plugin_token, "adapter_plugin"
+
+        return "", "unset"
+
+    def enforce_runtime_token(self, plugin_id: str, token: str) -> Dict[str, Any]:
+        """把权威令牌强制写入适配器运行时配置（幂等）。
+
+        与 :meth:`sync_from_plugin_config` 的区别：这里不读插件配置、不校验端口，
+        只做「MaiBot 侧说了算」的覆盖，供启动自检与运行中心巡检调用；
+        即使 SnowLuma 自行重新生成了随机令牌，也会被拉回权威值。
+        """
+
+        profile = self.get_profile(plugin_id)
+        if profile is None:
+            return {
+                "supported": False,
+                "enforced": False,
+                "changed_paths": [],
+                "message": "此适配器未声明运行时同步 Profile",
+            }
+        if not token:
+            return {
+                "supported": True,
+                "enforced": False,
+                "changed_paths": [],
+                "message": "未解析到权威 Token，已跳过强制同步",
+            }
+
+        root = self._resolve_runtime_root(profile)
+        if root is None:
+            return {
+                "supported": True,
+                "enforced": False,
+                "changed_paths": [],
+                "message": "未挂载适配器运行时配置目录；无法强制同步外部适配器",
+            }
+
+        runtime_files = self._iter_runtime_files(root, profile.runtime_globs)
+        changed_paths: List[str] = []
+        for runtime_file in runtime_files:
+            try:
+                data = json.loads(runtime_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(f"跳过无法解析的适配器运行时配置: {runtime_file} ({exc})")
+                continue
+            if not isinstance(data, dict):
+                continue
+            if profile.runtime_kind != "snowluma-onebot":
+                continue
+            if self._update_snowluma(data, token):
+                _write_json_atomic(runtime_file, data)
+                changed_paths.append(str(runtime_file))
+
+        return {
+            "supported": True,
+            "enforced": True,
+            "runtime_root": str(root),
+            "checked_paths": [str(path) for path in runtime_files],
+            "changed_paths": changed_paths,
+            # 运行时文件被改写时，协议端进程仍持有旧令牌，必须重启才生效。
+            "restart_required": bool(changed_paths),
+            "message": "已强制同步适配器运行时 Token" if changed_paths else "适配器运行时 Token 已一致",
+        }
 
     def sync_from_plugin_config(self, plugin_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
         """以 MaiBot 插件配置为权威源，将连接 Token 写入对应适配器运行时。"""
@@ -165,7 +288,7 @@ class AdapterConfigSyncService:
             if not isinstance(data, dict):
                 raise ValueError(f"运行时配置根节点不是对象: {runtime_file}")
             if profile.runtime_kind == "snowluma-onebot":
-                changed = self._update_snowluma(data, token, port)
+                changed = self._update_snowluma(data, token)
             else:
                 raise ValueError(f"不支持的适配器同步类型: {profile.runtime_kind}")
             if changed:

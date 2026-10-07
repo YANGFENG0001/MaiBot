@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Activity, DatabaseBackup, ExternalLink, PlugZap, RefreshCw, Server, Settings2, Wifi } from 'lucide-react'
+import { Activity, DatabaseBackup, ExternalLink, PlugZap, QrCode, RefreshCw, Server, Settings2, Wifi } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
@@ -22,11 +22,29 @@ export function OperationsPage() {
   const [syncing, setSyncing] = useState(false)
 
   const snowLumaWebUiPort = overview?.services.snowluma?.webui_port ?? 6099
+  const snowLuma = overview?.services.snowluma
 
   const snowLumaWebUiUrl = useMemo(() => {
     if (typeof window === 'undefined') return ''
     return `${window.location.protocol}//${window.location.hostname}:${snowLumaWebUiPort}/`
   }, [snowLumaWebUiPort])
+
+  // SnowLuma 官方控制台只做配置管理，没有 QQ 扫码界面；扫码页由部署侧
+  // （nginx 反代的 Xvfb 截图服务）提供，因此这里按独立的端口拼装地址。
+  const snowLumaQrUrl = useMemo(() => {
+    const rawPath = snowLuma?.qr_url || '/qq-qr'
+    if (typeof window === 'undefined') return rawPath
+    if (/^https?:\/\//i.test(rawPath)) return rawPath
+    const qrPort = snowLuma?.qr_port ?? 80
+    const portSuffix = qrPort && qrPort !== 80 && qrPort !== 443 ? `:${qrPort}` : ''
+    return `${window.location.protocol}//${window.location.hostname}${portSuffix}${rawPath}`
+  }, [snowLuma?.qr_port, snowLuma?.qr_url])
+
+  const tokenSourceLabel = useMemo(() => {
+    if (snowLuma?.token_source === 'environment') return '环境变量锁定'
+    if (snowLuma?.token_source === 'adapter_plugin') return '适配器配置（自动同步）'
+    return '未配置'
+  }, [snowLuma?.token_source])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -64,7 +82,6 @@ export function OperationsPage() {
     }
   }, [refresh, toast])
 
-  const snowluma = overview?.services.snowluma
   const enabledMirrors = overview?.mirrors.filter((mirror) => mirror.enabled) ?? []
 
   return (
@@ -101,25 +118,43 @@ export function OperationsPage() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2 text-lg"><Wifi className="h-5 w-5" />SnowLuma 适配器</CardTitle>
-              <Badge variant={statusVariant(snowluma?.state ?? 'unreachable')}>
-                {snowluma?.state === 'ready' ? '已连接' : snowluma?.state === 'login_required' ? '等待登录' : '不可达'}
+              <Badge variant={statusVariant(snowLuma?.state ?? 'unreachable')}>
+                {snowLuma?.state === 'ready' ? '已连接' : snowLuma?.state === 'login_required' ? '等待登录' : '不可达'}
               </Badge>
             </div>
-            <CardDescription>{snowluma?.diagnosis ?? '正在读取状态…'}</CardDescription>
+            <CardDescription>{snowLuma?.diagnosis ?? '正在读取状态…'}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <div className="grid grid-cols-2 gap-2 text-muted-foreground">
-              <span>当前 QQ</span><span className="text-foreground">{snowluma?.account || '未选择'}</span>
-              <span>OneBot Token</span><span className="font-mono text-foreground">{snowluma?.onebot_token ?? '未读取'}</span>
-              <span>管理台端口</span><span className="font-mono text-foreground">{snowLumaWebUiPort}</span>
+              <span>当前 QQ</span><span className="text-foreground">{snowLuma?.account || '未选择'}</span>
+              <span>OneBot Token</span><span className="font-mono text-foreground">{snowLuma?.onebot_token ?? '未读取'}</span>
+              <span>令牌来源</span><span className="text-foreground">{tokenSourceLabel}</span>
+              <span>控制台端口</span><span className="font-mono text-foreground">{snowLumaWebUiPort}</span>
             </div>
-            {snowluma && !snowluma.onebot_token_consistent && (
-              <p className="rounded-md bg-destructive/10 p-2 text-destructive">多个 OneBot 配置的 Token 不一致，请立即同步。</p>
+            {snowLuma && !snowLuma.onebot_token_consistent && (
+              <p className="rounded-md bg-destructive/10 p-2 text-destructive">
+                多个 OneBot 配置的 Token 不一致，点击「同步 Token」立即修复。
+              </p>
+            )}
+            {snowLuma?.restart_required && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700 dark:text-amber-300">
+                检测到令牌漂移，已按 MaiBot 侧配置自动改回；需重启 SnowLuma 协议端后生效。
+              </p>
+            )}
+            {snowLuma?.token_managed && (
+              <p className="text-xs text-muted-foreground">
+                该令牌由 MaiBot 托管，协议端无法自行变更。
+              </p>
             )}
             <div className="flex flex-wrap gap-2">
-              <Button asChild size="sm"><a href={snowLumaWebUiUrl} target="_blank" rel="noreferrer">SnowLuma WebUI<ExternalLink className="ml-2 h-4 w-4" /></a></Button>
+              <Button asChild size="sm">
+                <a href={snowLumaQrUrl} target="_blank" rel="noreferrer">
+                  <QrCode className="mr-2 h-4 w-4" />QQ 扫码登录
+                </a>
+              </Button>
+              <Button asChild size="sm" variant="outline"><a href={snowLumaWebUiUrl} target="_blank" rel="noreferrer">SnowLuma 控制台<ExternalLink className="ml-2 h-4 w-4" /></a></Button>
               <Button asChild size="sm" variant="outline"><Link to="/adapter-management">适配器设置</Link></Button>
-              <Button size="sm" variant="outline" onClick={() => void handleSync()} disabled={syncing || !snowluma?.sync_supported}>
+              <Button size="sm" variant="outline" onClick={() => void handleSync()} disabled={syncing || !snowLuma?.sync_supported}>
                 <RefreshCw className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />同步 Token
               </Button>
             </div>
