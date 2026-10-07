@@ -79,6 +79,7 @@ import { PluginIcon } from './plugins/PluginIcon'
 import { getPluginType, getPluginTypeLabel } from './plugins/types'
 import { AdapterHostPolicyPanel } from './plugin-config/AdapterHostPolicyPanel'
 import { AdapterPolicyDefaultsCard } from './plugin-config/AdapterPolicyDefaultsCard'
+import { SnowLumaLoginEntryCard } from './plugin-config/SnowLumaLoginEntryCard'
 import { getNestedRecord, getPluginMarketplaceRoutePath, isAdapterManagementPath } from './plugin-config/utils'
 import { usePluginList } from './plugin-config/hooks/usePluginList'
 import { usePluginLifecycle } from './plugin-config/hooks/usePluginLifecycle'
@@ -1761,6 +1762,9 @@ function PluginConfigPageContent() {
 
         {/* 适配器全局默认策略（位于插件加载情况下方） */}
         {adapterManagement && <AdapterPolicyDefaultsCard />}
+
+        {/* 协议端登录入口：SnowLuma 控制台没有 QQ 扫码界面，必须在这里给出直达链接 */}
+        {adapterManagement && <SnowLumaLoginEntryCard />}
 
         {/* 插件列表 */}
         {loading ? (

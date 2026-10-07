@@ -106,6 +106,21 @@ def _ensure_static_path_ready() -> Path | None:
     return None
 
 
+def _bootstrap_adapter_token_guard() -> None:
+    """启动自检：把 MaiBot 侧的权威 OneBot 令牌同步到协议端运行时配置。
+
+    SnowLuma 首次启动会自行生成随机令牌，控制台也允许人工改；这里在应用创建时做一次
+    幂等纠偏，保证「统一令牌」在重启之后依然成立。任何失败都只记日志，不影响 WebUI 启动。
+    """
+
+    try:
+        from src.webui.routers.operations import enforce_managed_onebot_token
+
+        enforce_managed_onebot_token()
+    except Exception as exc:
+        logger.warning(f"OneBot 令牌托管自检失败（不影响启动）: {exc}")
+
+
 def create_app(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -125,6 +140,7 @@ def create_app(
     _setup_cors(app, port)
     _register_api_routes(app)
     _setup_robots_txt(app)
+    _bootstrap_adapter_token_guard()
 
     if enable_static:
         _setup_static_files(app)

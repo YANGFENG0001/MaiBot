@@ -14,6 +14,10 @@ export interface SnowLumaOperationStatus {
   websocket_ready: boolean
   webui_ready: boolean
   webui_port: number
+  /** QQ 扫码登录页路径（SnowLuma 控制台本身没有扫码界面，由部署侧提供） */
+  qr_url: string
+  /** 扫码页对外端口，默认 80 */
+  qr_port: number
   diagnosis: string
   runtime_mounted: boolean
   runtime_root: string
@@ -22,6 +26,12 @@ export interface SnowLumaOperationStatus {
   onebot_token_consistent: boolean
   onebot_config_count: number
   sync_supported: boolean
+  /** 权威令牌来源：environment（环境变量硬锁定）/ adapter_plugin（适配器配置）/ unset */
+  token_source: 'environment' | 'adapter_plugin' | 'unset' | string
+  token_managed: boolean
+  /** 本轮巡检是否改写了运行时配置（改写后需重启协议端才生效） */
+  restart_required: boolean
+  changed_paths: string[]
 }
 
 export interface OperationsOverview {

@@ -14,9 +14,12 @@ import os
 
 from fastapi import APIRouter, Depends
 
+from src.common.logger import get_logger
 from src.webui.dependencies import require_auth
 from src.webui.services.adapter_config_sync_service import get_adapter_config_sync_service
 from src.webui.services.git_mirror_service import get_git_mirror_service
+
+logger = get_logger("webui.operations")
 
 router = APIRouter(prefix="/operations", tags=["operations"], dependencies=[Depends(require_auth)])
 
@@ -27,6 +30,11 @@ SNOWLUMA_ONEBOT_PORT = 3001
 SNOWLUMA_WEBUI_PORT = 5099
 # 浏览器访问用的端口：默认沿用 NapCat 时代的 6099，避免再动云厂商安全组
 SNOWLUMA_WEBUI_PUBLIC_PORT = int(os.getenv("MAIBOT_SNOWLUMA_WEBUI_PUBLIC_PORT", "6099"))
+
+# QQ 扫码登录页：SnowLuma 官方控制台只做配置管理、不提供扫码界面，
+# 因此扫码入口由部署侧（nginx 反代 Xvfb 截图服务）提供，这里只负责给出跳转地址。
+SNOWLUMA_QR_PATH = os.getenv("MAIBOT_SNOWLUMA_QR_PATH", "/qq-qr").strip() or "/qq-qr"
+SNOWLUMA_QR_PUBLIC_PORT = int(os.getenv("MAIBOT_SNOWLUMA_QR_PUBLIC_PORT", "80"))
 
 
 async def _port_open(host: str, port: int, timeout: float = 0.8) -> bool:
@@ -119,8 +127,41 @@ def _snowluma_runtime_summary() -> Dict[str, Any]:
     }
 
 
+def enforce_managed_onebot_token() -> Dict[str, Any]:
+    """把 MaiBot 侧的权威 OneBot 令牌强制同步到 SnowLuma 运行时配置。
+
+    这是「统一令牌、且不允许再被自动变更」的落点：WebUI 启动自检与运行中心巡检
+    都会执行一次幂等覆盖，SnowLuma 侧一旦重新随机生成或被人为改动，都会被拉回权威值。
+    """
+
+    sync_service = get_adapter_config_sync_service()
+    token, source = sync_service.resolve_managed_token(SNOWLUMA_ADAPTER_PLUGIN_ID)
+    result: Dict[str, Any] = {
+        "token_source": source,
+        "token_managed": bool(token),
+        "enforced": False,
+        "changed_paths": [],
+        "restart_required": False,
+    }
+    if not token:
+        logger.warning("环境变量与适配器插件均未提供 OneBot 令牌，已跳过强制同步")
+        return result
+
+    try:
+        result.update(sync_service.enforce_runtime_token(SNOWLUMA_ADAPTER_PLUGIN_ID, token))
+    except Exception as exc:
+        logger.error(f"强制同步 OneBot 令牌失败: {exc}", exc_info=True)
+        return result
+
+    if result.get("changed_paths"):
+        logger.info(f"已强制同步 OneBot 令牌，改写运行时配置: {result['changed_paths']}")
+    return result
+
+
 @router.get("/overview")
 async def get_operations_overview() -> Dict[str, Any]:
+    # 先纠偏再汇总：这样返回的 onebot_token_consistent 反映的是托管后的真实状态。
+    enforcement = enforce_managed_onebot_token()
     snowluma_ws, snowluma_webui = await asyncio.gather(
         _port_open(SNOWLUMA_CONTAINER_HOST, SNOWLUMA_ONEBOT_PORT),
         _port_open(SNOWLUMA_CONTAINER_HOST, SNOWLUMA_WEBUI_PORT),
@@ -136,15 +177,18 @@ async def get_operations_overview() -> Dict[str, Any]:
             "websocket_ready": snowluma_ws,
             "webui_ready": snowluma_webui,
             "webui_port": SNOWLUMA_WEBUI_PUBLIC_PORT,
+            "qr_url": SNOWLUMA_QR_PATH,
+            "qr_port": SNOWLUMA_QR_PUBLIC_PORT,
             "state": "ready" if snowluma_ws else "login_required" if snowluma_webui else "unreachable",
             "diagnosis": (
                 "OneBot WebSocket 已可用"
                 if snowluma_ws
-                else "SnowLuma 已启动但 QQ 尚未接入，请打开 SnowLuma WebUI 扫码登录"
+                else "SnowLuma 已启动但 QQ 尚未登录，请打开「QQ 扫码登录」扫码"
                 if snowluma_webui
-                else "SnowLuma 容器或 WebUI 不可达"
+                else "SnowLuma 容器或控制台不可达"
             ),
             "sync_supported": sync_service.get_profile(SNOWLUMA_ADAPTER_PLUGIN_ID) is not None,
+            **enforcement,
         }
     )
     return {
