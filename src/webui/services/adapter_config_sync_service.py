@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import json
 import os
+import stat
 import tempfile
 
 import tomlkit
@@ -53,6 +54,17 @@ _BUILTIN_PROFILES = (
 
 def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # ``mkstemp`` 建出来的文件属主是当前进程、权限固定 600，而 ``os.replace``
+    # 会把这份属主/权限一并带到目标文件上 —— 运行时配置目录通常是 bind mount，
+    # 协议端以另一个 uid 读取（SnowLuma 容器内是 1001）。一旦权限被改成 600，
+    # 协议端就 EACCES 读不到配置，随即**静默回落到内置默认值**
+    # （host=127.0.0.1 + 每次随机生成的 accessToken），表现为「明明登录了却显示
+    # 未登录」。所以覆盖前先记住原文件的属主/权限，写完再还原。
+    try:
+        previous_stat: Optional[os.stat_result] = path.stat()
+    except FileNotFoundError:
+        previous_stat = None
+
     descriptor, temporary_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file_obj:
@@ -67,6 +79,28 @@ def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+    if previous_stat is not None:
+        _restore_owner_and_mode(path, previous_stat)
+
+
+def _restore_owner_and_mode(path: Path, previous: os.stat_result) -> None:
+    """把 ``os.replace`` 冲掉的属主/权限还原回去。
+
+    两步都是尽力而为：还原失败说明当前进程没有权限（非 root），此时配置内容
+    本身已经写对了，不该因为改不动属主就让整次同步失败 —— 只记日志。
+    """
+    try:
+        os.chmod(path, stat.S_IMODE(previous.st_mode))
+    except OSError as error:
+        logger.warning(f"还原运行时配置权限失败（内容已写入）: {path} -> {error}")
+
+    if not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, previous.st_uid, previous.st_gid)
+    except OSError as error:
+        logger.warning(f"还原运行时配置属主失败（内容已写入）: {path} -> {error}")
 
 
 def _profile_from_dict(raw: Dict[str, Any]) -> AdapterSyncProfile:

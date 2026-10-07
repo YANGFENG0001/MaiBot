@@ -52,6 +52,9 @@ start_saka.bat
 .env
 .env.*
 .cursor
+# 本地 AI 助手的记忆/工作目录：里面可能留有服务器地址、运维口令等明文，
+# 只是「未跟踪」还不够保险，直接忽略掉，避免哪天被 git add -A 顺手带上去。
+.workbuddy-ai/
 start_all.bat
 config/bot_config_dev.toml
 config/bot_config.toml
