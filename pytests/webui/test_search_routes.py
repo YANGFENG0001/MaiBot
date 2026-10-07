@@ -155,7 +155,9 @@ async def test_final_ai_search_request_preserves_tool_evidence(
     assert result.response
     assert "bot_config.toml" in model_output.answer
     assert validation_calls == [model_output.answer]
-    assert final_options.temperature == 0
+    # 温度配置层已移除（见 9298f90f3 remove: 移除冗余的温度配置层）：
+    # 搜索 agent 不再强制 temperature=0，而是沿用模型自身的配置。
+    assert final_options.temperature is None
     assert final_options.tool_options is None
     assert all(not isinstance(message, FunctionCallOutputItem) for message in final_messages)
     assert all(not isinstance(message, FunctionCallItem) for message in final_messages)
