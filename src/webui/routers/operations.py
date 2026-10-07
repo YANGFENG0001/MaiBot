@@ -141,6 +141,7 @@ def enforce_managed_onebot_token() -> Dict[str, Any]:
         "token_managed": bool(token),
         "enforced": False,
         "changed_paths": [],
+        "token_from_env": False,
         "restart_required": False,
     }
     if not token:
@@ -148,7 +149,7 @@ def enforce_managed_onebot_token() -> Dict[str, Any]:
         return result
 
     try:
-        result.update(sync_service.enforce_runtime_token(SNOWLUMA_ADAPTER_PLUGIN_ID, token))
+        result.update(sync_service.enforce_runtime_token(SNOWLUMA_ADAPTER_PLUGIN_ID, token, token_source=source))
     except Exception as exc:
         logger.error(f"强制同步 OneBot 令牌失败: {exc}", exc_info=True)
         return result

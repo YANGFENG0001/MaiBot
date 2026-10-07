@@ -20,6 +20,9 @@
 #       MAIBOT_SNOWLUMA_IMAGE=motricseven7/snowluma:latest
 #     但那样下面两个 SNOWLUMA_ONEBOT_* 环境变量会被忽略（官方镜像不认识），
 #     绑定地址与令牌又回到「127.0.0.1 + 随机」的老问题。
+#     ⚠️ 这种情况下还要把 MAIBOT_SNOWLUMA_TOKEN_FROM_ENV=0 一起加上：运行中心
+#        默认认定「协议端从环境变量读令牌 ⇒ 漂移改回即可、无需重启」，官方
+#        镜像不满足这个前提，必须用这个逃生阀恢复保守提示。
 #   * 官方镜像底座内置 Linux QQ + Xvfb + VNC/noVNC + supervisord，
 #     因此不需要自定义 entrypoint 去还原 QQ 官方入口。
 #     官方文档：https://snowluma.github.io/zh/docs/guide/deploy/docker
@@ -42,6 +45,9 @@ services:
       - MAIBOT_SNOWLUMA_CONFIG_DIR=/MaiMBot/adapters-config/snowluma/config
       # 同一个令牌源：core 侧用它做权威值，协议端侧用它锁定监听器。
       # 两边同源才不会出现「core 认为的令牌」与「协议端实际用的令牌」不一致。
+      # 也正因为两边用**同一个变量 + 同一个 :? 守卫**，core 侧解析得出来就说明
+      # 协议端侧也一定注入了 SNOWLUMA_ONEBOT_TOKEN —— 运行中心据此判定
+      # 「漂移改回即可、无需重启」（见 AdapterSyncProfile.token_env_var）。
       - MAIBOT_SNOWLUMA_ONEBOT_TOKEN=${MAIBOT_SNOWLUMA_ONEBOT_TOKEN:?请在 .env 中设置 MAIBOT_SNOWLUMA_ONEBOT_TOKEN}
     volumes:
       # SnowLuma 把配置写在自身数据目录的 config/ 下，这里透出给 core 读取/同步

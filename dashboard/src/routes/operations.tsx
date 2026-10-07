@@ -141,6 +141,11 @@ export function OperationsPage() {
                 检测到令牌漂移，已按 MaiBot 侧配置自动改回；需重启 SnowLuma 协议端后生效。
               </p>
             )}
+            {!!snowLuma?.changed_paths?.length && !snowLuma?.restart_required && (
+              <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-2 text-emerald-700 dark:text-emerald-300">
+                检测到令牌漂移，已自动改回；协议端从环境变量读取令牌，无需重启。
+              </p>
+            )}
             {snowLuma?.token_managed && (
               <p className="text-xs text-muted-foreground">
                 该令牌由 MaiBot 托管，协议端无法自行变更。

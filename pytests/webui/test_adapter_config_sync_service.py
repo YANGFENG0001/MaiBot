@@ -213,3 +213,109 @@ def test_snowluma_requires_client_section(tmp_path: Path, monkeypatch) -> None:
         assert "[client]" in str(exc)
     else:  # pragma: no cover - 只有在校验被移除时才会走到
         raise AssertionError("缺少 [client] 段时应当报错")
+
+
+def _write_drifted_onebot(tmp_path: Path) -> Path:
+    onebot_path = tmp_path / "onebot_2980639690.json"
+    onebot_path.write_text(
+        json.dumps(
+            {
+                "mode": "snapshot",
+                "networks": {
+                    "wsServers": [{"name": "ws-default", "port": 3001, "accessToken": "drifted"}],
+                    "httpServers": [{"name": "http-default", "port": 3000, "accessToken": "drifted"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return onebot_path
+
+
+def test_enforce_runtime_token_does_not_ask_for_restart_when_runtime_reads_env(tmp_path: Path, monkeypatch) -> None:
+    """令牌来自环境变量、且协议端也从环境变量读令牌时，改回即生效，不该提示重启。
+
+    这正是「漂移 → 改回 → 重启」这条链被切断的地方：自建 SnowLuma 镜像在
+    ``loadOneBotConfig()`` 收尾处叠加 ``SNOWLUMA_ONEBOT_TOKEN``（只在内存生效、
+    不落盘），所以磁盘上的令牌写错也影响不了进程实际持有的令牌。
+    """
+
+    onebot_path = _write_drifted_onebot(tmp_path)
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+
+    result = AdapterConfigSyncService().enforce_runtime_token(
+        "maibot-team.snowluma-adapter", "managed", token_source="environment"
+    )
+
+    assert result["changed_paths"] == [str(onebot_path.resolve())]
+    assert result["token_from_env"] is True
+    assert result["restart_required"] is False
+    assert "SNOWLUMA_ONEBOT_TOKEN" in result["message"]
+
+    saved = json.loads(onebot_path.read_text(encoding="utf-8"))
+    assert saved["networks"]["wsServers"][0]["accessToken"] == "managed"
+    assert saved["networks"]["httpServers"][0]["accessToken"] == "managed"
+
+
+def test_enforce_runtime_token_keeps_restart_for_plugin_sourced_token(tmp_path: Path, monkeypatch) -> None:
+    """令牌来自适配器插件配置时不假设协议端有环境变量覆盖，保守地照旧提示重启。"""
+
+    onebot_path = _write_drifted_onebot(tmp_path)
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+
+    result = AdapterConfigSyncService().enforce_runtime_token(
+        "maibot-team.snowluma-adapter", "managed", token_source="adapter_plugin"
+    )
+
+    assert result["changed_paths"] == [str(onebot_path.resolve())]
+    assert result["token_from_env"] is False
+    assert result["restart_required"] is True
+
+
+@pytest.mark.parametrize("flag", ["0", "false", "no", "off", "OFF"])
+def test_enforce_runtime_token_escape_hatch_restores_restart_hint(tmp_path: Path, monkeypatch, flag: str) -> None:
+    """换回不认识该环境变量的镜像时，用逃生阀恢复保守提示。"""
+
+    _write_drifted_onebot(tmp_path)
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_TOKEN_FROM_ENV", flag)
+
+    result = AdapterConfigSyncService().enforce_runtime_token(
+        "maibot-team.snowluma-adapter", "managed", token_source="environment"
+    )
+
+    assert result["token_from_env"] is False
+    assert result["restart_required"] is True
+
+
+def test_enforce_runtime_token_without_changes_never_asks_for_restart(tmp_path: Path, monkeypatch) -> None:
+    onebot_path = _write_drifted_onebot(tmp_path)
+    onebot_path.write_text(
+        json.dumps(
+            {
+                "mode": "snapshot",
+                "networks": {
+                    "wsServers": [{"name": "ws-default", "port": 3001, "accessToken": "managed"}],
+                    "httpServers": [{"name": "http-default", "port": 3000, "accessToken": "managed"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+
+    result = AdapterConfigSyncService().enforce_runtime_token(
+        "maibot-team.snowluma-adapter", "managed", token_source="environment"
+    )
+
+    assert result["changed_paths"] == []
+    assert result["restart_required"] is False
+
+
+def test_snowluma_profile_declares_token_env_var() -> None:
+    """内置 Profile 必须声明协议端读取令牌的环境变量名，否则上面那条捷径会失效。"""
+
+    profile = AdapterConfigSyncService().get_profile("maibot-team.snowluma-adapter")
+
+    assert profile is not None
+    assert profile.token_env_var == "SNOWLUMA_ONEBOT_TOKEN"
