@@ -1,6 +1,10 @@
 from pathlib import Path
 
 import json
+import os
+import stat
+
+import pytest
 
 from src.webui.services.adapter_config_sync_service import AdapterConfigSyncService
 
@@ -107,6 +111,56 @@ def test_enforce_runtime_token_skips_without_authoritative_token(tmp_path: Path,
 
     assert result["enforced"] is False
     assert result["changed_paths"] == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Windows 没有 POSIX 权限位，无从比较")
+def test_write_keeps_runtime_config_mode(tmp_path: Path, monkeypatch) -> None:
+    """覆盖运行时配置不能改动它的权限位。
+
+    ``mkstemp`` 建出来的是 600，``os.replace`` 会把这个权限一并带到目标文件上。
+    协议端以另一个 uid 读这个文件，600 会让它 EACCES 读不到，随即静默回落到
+    内置默认值（host=127.0.0.1 + 每次随机生成的令牌），表现为「明明登录了却
+    显示未登录」。这里锁死「写完之后权限位不变」。
+    """
+
+    onebot_path = tmp_path / "onebot.json"
+    onebot_path.write_text(
+        json.dumps({"networks": {"wsServers": [{"port": 3001, "accessToken": "old"}]}}),
+        encoding="utf-8",
+    )
+    os.chmod(onebot_path, 0o644)
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+
+    AdapterConfigSyncService().sync_from_plugin_config(
+        "maibot-team.snowluma-adapter",
+        {"client": {"port": 3001, "token": "snow-token"}},
+    )
+
+    assert json.loads(onebot_path.read_text(encoding="utf-8"))["networks"]["wsServers"][0][
+        "accessToken"
+    ] == "snow-token"
+    assert stat.S_IMODE(onebot_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Windows 没有 POSIX 权限位，无从比较")
+def test_write_keeps_runtime_config_owner(tmp_path: Path, monkeypatch) -> None:
+    """属主同样要保住：容器里 core 是 root，协议端是 1001，换属主即等于换读取权限。"""
+
+    onebot_path = tmp_path / "onebot.json"
+    onebot_path.write_text(
+        json.dumps({"networks": {"wsServers": [{"port": 3001, "accessToken": "old"}]}}),
+        encoding="utf-8",
+    )
+    before = onebot_path.stat()
+    monkeypatch.setenv("MAIBOT_SNOWLUMA_CONFIG_DIR", str(tmp_path))
+
+    AdapterConfigSyncService().sync_from_plugin_config(
+        "maibot-team.snowluma-adapter",
+        {"client": {"port": 3001, "token": "snow-token"}},
+    )
+
+    after = onebot_path.stat()
+    assert (after.st_uid, after.st_gid) == (before.st_uid, before.st_gid)
 
 
 def test_enforce_runtime_token_reports_unsupported_adapter() -> None:

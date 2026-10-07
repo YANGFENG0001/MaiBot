@@ -1,12 +1,27 @@
-# SnowLuma 协议端 overlay（官方镜像）
+# SnowLuma 协议端 overlay（fork 镜像）
 #
 # 用法：docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
 #                      -f docker-compose.snowluma.yml up -d core snowluma
 #
+# ⚠️ 前置：在部署目录的 .env 里设置协议端 OneBot 令牌（**不要写进仓库**）
+#       MAIBOT_SNOWLUMA_ONEBOT_TOKEN=<你的令牌>
+#    没设的话 compose 会直接报错退出 —— 这是刻意的：SnowLuma 出厂会给
+#    http-default / ws-default 各随机生成一份 accessToken（两份还不一样），
+#    一旦回落到随机值，core 就连不上协议端，而且每次重启都会失联一次。
+#
 # 说明：
-#   * 协议端直接用 SnowLuma 官方 Docker 镜像（内置 Linux QQ + Xvfb + VNC/noVNC
-#     + supervisord + SnowLuma 运行时），**不再依赖任何第三方镜像底座**，
-#     因此也不需要自定义 entrypoint 去还原 QQ 官方入口。
+#   * 协议端用**本仓库自建的 SnowLuma 镜像**
+#       ghcr.io/yangfeng0001/snowluma:latest
+#     它 = SnowLuma 官方镜像 + 官方发行版（1.14.22）运行时 + 我们对
+#     packages/onebot 的改动（新增 SNOWLUMA_ONEBOT_HOST / SNOWLUMA_ONEBOT_TOKEN
+#     两个内存级覆盖）。镜像由 https://github.com/YANGFENG0001/SnowLuma 的
+#     docker-image.yml 自动构建，sync-upstream.yml 每 10 分钟跟随上游。
+#     想退回纯官方镜像：把 .env 里的 MAIBOT_SNOWLUMA_IMAGE 设为
+#       MAIBOT_SNOWLUMA_IMAGE=motricseven7/snowluma:latest
+#     但那样下面两个 SNOWLUMA_ONEBOT_* 环境变量会被忽略（官方镜像不认识），
+#     绑定地址与令牌又回到「127.0.0.1 + 随机」的老问题。
+#   * 官方镜像底座内置 Linux QQ + Xvfb + VNC/noVNC + supervisord，
+#     因此不需要自定义 entrypoint 去还原 QQ 官方入口。
 #     官方文档：https://snowluma.github.io/zh/docs/guide/deploy/docker
 #   * SnowLuma 通过 ptrace 把 hook 注入 QQ 进程，因此必须
 #     cap_add: SYS_PTRACE 且 security_opt: seccomp=unconfined（后者不能省，
@@ -25,12 +40,15 @@ services:
     environment:
       # 让运行中心的「同步 Token」能找到 SnowLuma 的运行时配置目录
       - MAIBOT_SNOWLUMA_CONFIG_DIR=/MaiMBot/adapters-config/snowluma/config
+      # 同一个令牌源：core 侧用它做权威值，协议端侧用它锁定监听器。
+      # 两边同源才不会出现「core 认为的令牌」与「协议端实际用的令牌」不一致。
+      - MAIBOT_SNOWLUMA_ONEBOT_TOKEN=${MAIBOT_SNOWLUMA_ONEBOT_TOKEN:?请在 .env 中设置 MAIBOT_SNOWLUMA_ONEBOT_TOKEN}
     volumes:
       # SnowLuma 把配置写在自身数据目录的 config/ 下，这里透出给 core 读取/同步
       - ./data/snowluma/config:/MaiMBot/adapters-config/snowluma/config
 
   snowluma:
-    image: motricseven7/snowluma:latest
+    image: ${MAIBOT_SNOWLUMA_IMAGE:-ghcr.io/yangfeng0001/snowluma:latest}
     container_name: maim-bot-snowluma
     restart: always
     # QQ 基于 Chromium，容器默认 64MB /dev/shm 偏小会让它崩；
@@ -55,6 +73,11 @@ services:
       - SNOWLUMA_SCREEN=1280x800x24
       - SNOWLUMA_HOOK_AUTOLOAD=1
       - SNOWLUMA_QQ_FLAGS=--disable-gpu --disable-software-rasterizer --disable-gpu-compositing
+      # OneBot 监听器：工厂默认绑 127.0.0.1，core 从容器网络连不进来，必须放开
+      - SNOWLUMA_ONEBOT_HOST=0.0.0.0
+      # 令牌由环境变量硬锁定 —— 协议端不再自己随机生成，也就不会再「漂移」。
+      # 只在内存生效、不写回 onebot_<uin>.json（fork 侧行为，见上游 README）。
+      - SNOWLUMA_ONEBOT_TOKEN=${MAIBOT_SNOWLUMA_ONEBOT_TOKEN:?请在 .env 中设置 MAIBOT_SNOWLUMA_ONEBOT_TOKEN}
     ports:
       # 只绑本机：对外 6099 由 nginx 反代（见文件头说明）。
       # 宿主 5099 未被占用，且不与 nginx 的 0.0.0.0:6099 冲突。
