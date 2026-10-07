@@ -2415,7 +2415,6 @@ def _get_allowed_adapter_config_roots() -> Tuple[Path, ...]:
     project_root = Path(PROJECT_ROOT).resolve()
     return (
         project_root,
-        (project_root.parent / "MaiBot-Napcat-Adapter").resolve(),
         Path("/MaiMBot/adapters-config").resolve(),
     )
 
