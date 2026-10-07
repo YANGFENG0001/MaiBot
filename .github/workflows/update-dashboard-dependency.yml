@@ -40,6 +40,11 @@ jobs:
       - name: Update dependency lock
         run: uv lock --upgrade-package maibot-dashboard
 
+      # 提交前断言：lock 必须与 pyproject.toml 完全一致。
+      # 否则 Dockerfile 的 `uv sync --locked` 会让镜像构建失败。
+      - name: Verify lock is in sync
+        run: uv lock --check
+
       - name: Commit dependency update
         run: |
           set -euo pipefail

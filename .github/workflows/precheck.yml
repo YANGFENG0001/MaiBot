@@ -46,6 +46,20 @@ jobs:
 
           git merge --abort > /dev/null 2>&1 || true
         shell: bash
+
+  # Dockerfile 用 `uv sync --locked` 装依赖：只要 pyproject.toml 改了而 uv.lock 没跟着
+  # 重算，镜像构建就会在 `RUN uv sync --locked` 处失败，而错误信息只是
+  # "The lockfile at `uv.lock` needs to be updated"，很难定位到是依赖改动引入的。
+  # 这里提前拦住。
+  lock-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+      - name: Check uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
   labeler:
     runs-on: ubuntu-24.04
     needs: conflict-check
