@@ -58,12 +58,79 @@ export interface BotProfileUpdateInput {
   expected_revision?: number
 }
 
+/** 新建 BotProfile；`profile_type` 由后端限定为 group。 */
+export interface BotProfileCreateInput {
+  name: string
+  home_memory_space_id: string
+  profile_type?: 'group'
+  parent_profile_id?: string | null
+  persona_profile_id?: string | null
+  inherit_parent_persona?: boolean
+  inherit_parent_tools?: boolean
+  inherit_parent_plugins?: boolean
+  enabled?: boolean
+}
+
+/** 会话级 Bot 路由：让某个群/私聊临时使用指定 Bot。 */
+export interface BotRouteStateItem {
+  session_id: string
+  active_bot_profile_id: string
+  active_bot_profile_name: string
+  route_mode: string
+  changed_by_person_id: string
+  policy_revision: number
+  updated_at: string
+}
+
 export async function getBotProfiles(): Promise<BotProfileItem[]> {
   const response = await backendApi.get<{ success: boolean; data: BotProfileItem[] }>(API_BASE, {
     cache: 'no-store',
     errorMessage: '读取 Bot 配置失败',
   })
   return response.data
+}
+
+export async function createBotProfile(input: BotProfileCreateInput): Promise<BotProfileItem> {
+  const response = await backendApi.post<{ success: boolean; data: BotProfileItem }>(API_BASE, {
+    body: input,
+    errorMessage: '创建 Bot 失败',
+  })
+  return response.data
+}
+
+export async function deleteBotProfile(profileId: string): Promise<boolean> {
+  const response = await backendApi.delete<{ success: boolean; removed: boolean }>(
+    `${API_BASE}/${encodeURIComponent(profileId)}`,
+    { errorMessage: '删除 Bot 失败' },
+  )
+  return response.removed
+}
+
+export async function getBotRoutes(): Promise<BotRouteStateItem[]> {
+  const response = await backendApi.get<{ success: boolean; data: BotRouteStateItem[] }>(`${API_BASE}/routes`, {
+    cache: 'no-store',
+    errorMessage: '读取会话 Bot 路由失败',
+  })
+  return response.data
+}
+
+export async function setBotRoute(
+  sessionId: string,
+  activeBotProfileId: string,
+  routeMode: 'public' | 'group' | 'specific' = 'specific',
+): Promise<BotRouteStateItem> {
+  return backendApi.put<BotRouteStateItem>(`${API_BASE}/routes/${encodeURIComponent(sessionId)}`, {
+    body: { active_bot_profile_id: activeBotProfileId, route_mode: routeMode },
+    errorMessage: '设置会话 Bot 失败',
+  })
+}
+
+export async function resetBotRoute(sessionId: string): Promise<boolean> {
+  const response = await backendApi.delete<{ success: boolean; removed: boolean }>(
+    `${API_BASE}/routes/${encodeURIComponent(sessionId)}`,
+    { errorMessage: '恢复默认 Bot 失败' },
+  )
+  return response.removed
 }
 
 export async function updateBotProfile(
