@@ -238,7 +238,11 @@ describe('useMaibotVersion', () => {
 
     expect(result.current.hitokoto).toEqual({ hitokoto: '测试一言', from: '来源' })
     expect(result.current.hitokotoLoading).toBe(false)
-    expect(fetch).toHaveBeenCalledWith('https://v1.hitokoto.cn/?c=a&c=b&c=c&c=d&c=h&c=i&c=k')
+    // 上游 1.3.5 给一言请求加了 AbortController，第二个实参是 signal。
+    expect(fetch).toHaveBeenCalledWith(
+      'https://v1.hitokoto.cn/?c=a&c=b&c=c&c=d&c=h&c=i&c=k',
+      expect.objectContaining({ signal: expect.anything() })
+    )
     expect(localStorage.getItem(HITOKOTO_INDEX_STORAGE_KEY)).toBe('1')
   })
 

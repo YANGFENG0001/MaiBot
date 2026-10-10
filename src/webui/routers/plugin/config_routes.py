@@ -1,7 +1,7 @@
 """插件配置相关 WebUI 路由。"""
 
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 import asyncio
 import os
@@ -31,8 +31,8 @@ logger = get_logger("webui.plugin_routes")
 
 router = APIRouter()
 
-_PLUGIN_RUNTIME_TOGGLE_TIMEOUT_SECONDS = 16.0
-_PLUGIN_RUNTIME_TOGGLE_POLL_INTERVAL_SECONDS = 0.1
+_SDK_VIRTUAL_GENERAL_SECTION_NAME = "general"
+_PLUGIN_RESERVED_SECTION_NAME = "plugin"
 
 
 def _write_text_atomic(file_path: Path, content: str) -> None:
@@ -102,6 +102,86 @@ def _merge_plugin_config_patch(base_config: Dict[str, Any], patch_config: Dict[s
     merged_config = cast(Dict[str, Any], _to_builtin_data(base_config))
     deep_merge(merged_config, patch_config)
     return merged_config
+
+
+def _get_virtual_general_field_names(runtime_snapshot: InspectPluginConfigResultPayload) -> List[str]:
+    """获取 SDK 虚构 general 配置节中的字段名。
+
+    SDK 生成配置 Schema 时，会把配置模型根级的扁平字段归入一个名为 ``general``
+    的配置节，但这些字段在 ``config.toml`` 中位于根级，并不存在 ``[general]`` 表。
+    只有 Schema 含有 general 节、该节字段全部是插件默认配置的根级键，且插件默认
+    配置与当前配置中都没有真实的 general 表时，才把它视为虚构节，避免影响真正
+    声明了 general 配置节的插件（包括自定义 Schema、未提供默认配置的插件）。
+
+    Args:
+        runtime_snapshot: 插件运行时返回的配置解析结果。
+
+    Returns:
+        List[str]: 虚构 general 节中的字段名；general 节不是虚构节时返回空列表。
+    """
+
+    sections = runtime_snapshot.config_schema.get("sections")
+    if not isinstance(sections, dict):
+        return []
+    general_section = sections.get(_SDK_VIRTUAL_GENERAL_SECTION_NAME)
+    if not isinstance(general_section, dict) or not isinstance(general_section.get("fields"), dict):
+        return []
+    if isinstance(runtime_snapshot.default_config.get(_SDK_VIRTUAL_GENERAL_SECTION_NAME), dict):
+        return []
+    if isinstance(runtime_snapshot.normalized_config.get(_SDK_VIRTUAL_GENERAL_SECTION_NAME), dict):
+        return []
+    general_field_names = list(general_section["fields"])
+    # SDK 虚构节的字段都来自配置模型根级，默认配置会把它们全部导出到根级；自定义 Schema 声明的 general 节不满足这一点
+    if not general_field_names or any(
+        field_name not in runtime_snapshot.default_config for field_name in general_field_names
+    ):
+        return []
+    return general_field_names
+
+
+def _fold_root_fields_into_virtual_general(config_data: Dict[str, Any], field_names: List[str]) -> Dict[str, Any]:
+    """把根级扁平字段移入虚构 general 节，使配置形状与 Schema 一致。
+
+    WebUI 可视化表单按 ``config[section][field]`` 读写字段，因此读取时需要把
+    根级扁平字段放到 ``general`` 下；保存时再由
+    :func:`_unfold_virtual_general_into_root` 还原回根级。
+    ``plugin`` 保留节被声明为普通 dict 时也会出现在虚构节中，它只复制不移动：
+    WebUI 依赖根级 ``config.plugin.enabled`` 判断启用状态，而保存时 ``general.*``
+    优先于根级键还原，复制不会产生冲突。
+
+    Args:
+        config_data: 磁盘形状（根级扁平字段）的配置。
+        field_names: 虚构 general 节中的字段名。
+
+    Returns:
+        Dict[str, Any]: 扁平字段位于 ``general`` 下的配置副本。
+    """
+
+    folded_config = dict(config_data)
+    general_config: Dict[str, Any] = {}
+    for field_name in field_names:
+        if field_name not in folded_config:
+            continue
+        if field_name == _PLUGIN_RESERVED_SECTION_NAME:
+            general_config[field_name] = folded_config[field_name]
+        else:
+            general_config[field_name] = folded_config.pop(field_name)
+    folded_config[_SDK_VIRTUAL_GENERAL_SECTION_NAME] = general_config
+    return folded_config
+
+
+def _unfold_virtual_general_into_root(config_patch: Dict[str, Any]) -> None:
+    """把提交内容中虚构 general 节下的字段就地还原到根级。
+
+    Args:
+        config_patch: 本次提交的配置改动。
+    """
+
+    general_patch = config_patch.get(_SDK_VIRTUAL_GENERAL_SECTION_NAME)
+    if not isinstance(general_patch, dict):
+        return
+    del config_patch[_SDK_VIRTUAL_GENERAL_SECTION_NAME]
+    config_patch.update(general_patch)
 
 
 def _build_schema_from_current_config(plugin_id: str, current_config: Any) -> Dict[str, Any]:
@@ -370,44 +450,6 @@ async def _validate_plugin_config_via_runtime(plugin_id: str, config_data: Dict[
     return await run_on_main_loop(runtime_manager.validate_plugin_config(plugin_id, config_data))
 
 
-async def _wait_for_plugin_runtime_toggle(
-    plugin_id: str,
-    enabled: bool,
-    *,
-    timeout_seconds: float = _PLUGIN_RUNTIME_TOGGLE_TIMEOUT_SECONDS,
-    poll_interval_seconds: float = _PLUGIN_RUNTIME_TOGGLE_POLL_INTERVAL_SECONDS,
-) -> Optional[str]:
-    """等待配置监听器把插件启停状态同步到运行时。
-
-    WebUI 写入 ``enabled`` 后，插件运行时会通过文件监听器异步完成加载或卸载。
-    这里等待运行时给出终态，避免接口返回后前端立即刷新，把启用前遗留的
-    ``inactive`` 状态误判成加载失败。
-
-    Args:
-        plugin_id: 插件 ID。
-        enabled: 目标启用状态。
-        timeout_seconds: 最长等待时间。
-        poll_interval_seconds: 状态轮询间隔。
-
-    Returns:
-        Optional[str]: 运行时终态；超时则返回 ``None``。
-    """
-
-    from src.plugin_runtime.integration import get_plugin_runtime_manager
-
-    runtime_manager = get_plugin_runtime_manager()
-    terminal_statuses = {"success", "failed"} if enabled else {"inactive"}
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
-
-    while True:
-        runtime_status = runtime_manager.get_plugin_load_statuses().get(plugin_id)
-        if runtime_status in terminal_statuses:
-            return runtime_status
-        if asyncio.get_running_loop().time() >= deadline:
-            return None
-        await asyncio.sleep(poll_interval_seconds)
-
-
 @router.get("/config/{plugin_id}/bundle")
 async def get_plugin_config_bundle(plugin_id: str, maibot_session: Optional[str] = Cookie(None)) -> Dict[str, Any]:
     """一次性返回插件配置页初始化所需的数据，避免重复运行时解析。"""
@@ -429,6 +471,9 @@ async def get_plugin_config_bundle(plugin_id: str, maibot_session: Optional[str]
 
         if runtime_snapshot is not None:
             current_config = dict(runtime_snapshot.normalized_config)
+            # 表单按 Schema 的 general 节读写根级扁平字段，返回与 Schema 一致的形状
+            if virtual_general_fields := _get_virtual_general_field_names(runtime_snapshot):
+                current_config = _fold_root_fields_into_virtual_general(current_config, virtual_general_fields)
         else:
             current_config = _load_plugin_config_from_disk(plugin_path) if config_path.exists() else {}
 
@@ -665,6 +710,10 @@ async def update_plugin_config(
             except ValueError as exc:
                 logger.warning(f"插件 {plugin_id} 保存前配置检查失败，将回退到磁盘内容: {exc}")
 
+            # 表单把根级扁平字段提交在 SDK 虚构的 general 节下，需还原回根级，否则会被模型校验丢弃
+            if runtime_snapshot is not None and _get_virtual_general_field_names(runtime_snapshot):
+                _unfold_virtual_general_into_root(config_patch)
+
             base_config = (
                 dict(runtime_snapshot.normalized_config)
                 if runtime_snapshot is not None
@@ -776,62 +825,55 @@ async def toggle_plugin(plugin_id: str, maibot_session: Optional[str] = Cookie(N
     require_plugin_token(maibot_session)
     logger.info(f"切换插件状态: {plugin_id}")
 
+    from src.plugin_runtime.integration import get_plugin_runtime_manager
+
     try:
-        plugin_path = find_plugin_path_by_id(plugin_id)
-        if plugin_path is None:
-            raise HTTPException(status_code=404, detail=f"未找到插件: {plugin_id}")
+        new_enabled = False
 
-        config_path = get_plugin_config_path(plugin_id, plugin_path)
-        try:
+        async def write_config() -> None:
+            nonlocal new_enabled
+            plugin_path = await asyncio.to_thread(find_plugin_path_by_id, plugin_id)
+            if plugin_path is None:
+                raise HTTPException(status_code=404, detail=f"未找到插件: {plugin_id}")
+            config_path = get_plugin_config_path(plugin_id, plugin_path)
             runtime_snapshot = await _inspect_plugin_config_via_runtime(plugin_id)
-        except ValueError as exc:
-            logger.warning(f"插件 {plugin_id} 状态切换前配置解析失败，将回退到磁盘内容: {exc}")
-            runtime_snapshot = None
-
-        current_config = (
-            dict(runtime_snapshot.normalized_config)
-            if runtime_snapshot is not None
-            else _load_plugin_config_from_disk(plugin_path)
-        )
-        config = _build_toml_document(current_config)
-
-        plugin_section = config.get("plugin")
-        if plugin_section is None or not hasattr(plugin_section, "get"):
-            config["plugin"] = tomlkit.table()
-
-        plugin_config = cast(Any, config["plugin"])
-        current_enabled = (
-            bool(runtime_snapshot.enabled)
-            if runtime_snapshot is not None
-            else bool(plugin_config.get("enabled", True))
-        )
-        new_enabled = not current_enabled
-        plugin_config["enabled"] = new_enabled
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        save_toml_with_format(config, str(config_path))
-
-        runtime_status = None
-        if runtime_snapshot is not None:
-            runtime_status = await run_on_main_loop(
-                _wait_for_plugin_runtime_toggle(plugin_id, new_enabled)
+            current_config = (
+                dict(runtime_snapshot.normalized_config)
+                if runtime_snapshot is not None
+                else await asyncio.to_thread(_load_plugin_config_from_disk, plugin_path)
             )
-            if runtime_status is None:
-                logger.warning(f"插件 {plugin_id} 配置已写入，但等待运行时同步启停状态超时")
+            config = _build_toml_document(current_config)
+            plugin_section = config.get("plugin")
+            if plugin_section is None or not hasattr(plugin_section, "get"):
+                config["plugin"] = tomlkit.table()
+            plugin_config = cast(Any, config["plugin"])
+            current_enabled = (
+                bool(runtime_snapshot.enabled) if runtime_snapshot is not None
+                else bool(plugin_config.get("enabled", True))
+            )
+            new_enabled = not current_enabled
+            plugin_config["enabled"] = new_enabled
 
+            def save() -> None:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                save_toml_with_format(config, str(config_path))
+
+            await asyncio.to_thread(save)
+
+        runtime_status = await run_on_main_loop(
+            get_plugin_runtime_manager().apply_plugin_config(plugin_id, write_config)
+        )
         status = "启用" if new_enabled else "禁用"
-        logger.info(f"已{status}插件: {plugin_id}")
-        if runtime_snapshot is None:
-            runtime_note = "状态更改将在插件运行时启动后生效"
-        elif runtime_status is None:
-            runtime_note = "运行时状态同步仍在进行"
-        else:
-            runtime_note = "状态更改已同步到插件运行时"
+        logger.info(f"插件 {plugin_id} 配置已{status}，运行时状态：{runtime_status}")
         return {
-            "success": True,
-            "enabled": new_enabled,
-            "message": f"插件已{status}",
-            "note": runtime_note,
+            "success": True, "enabled": new_enabled, "runtime_status": runtime_status,
+            "message": f"插件已{status}" if runtime_status != "stopped" else f"插件{status}配置已保存",
+            "note": "运行时尚未启动" if runtime_status == "stopped" else "状态更改已同步到插件运行时",
         }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=f"插件状态同步失败：{exc}") from exc
     except HTTPException:
         raise
     except Exception as e:

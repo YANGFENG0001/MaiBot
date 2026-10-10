@@ -1,44 +1,68 @@
 ﻿"""reply 内置工具。"""
 
-from typing import Any, Optional
+from copy import deepcopy
+from typing import Any, Dict, Optional
+
+import asyncio
 import json
 import re
 import traceback
 
 from src.chat.replyer.replyer_manager import replyer_manager
+from src.chat.utils.utils import is_bot_self
 from src.cli.maisaka_cli_sender import CLI_PLATFORM_NAME, render_cli_message
 from src.common.data_models.reply_generation_data_models import ReplyGenerationResult, build_reply_monitor_detail
 from src.common.logger import get_logger
 from src.config import config as config_module
-from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
+from src.core.tooling import ToolAvailabilityContext, ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
 from src.maisaka.context.message_adapter import build_visible_text_from_sequence, parse_speaker_content
 from src.maisaka.context.message_id_alias import to_display_message_id
 from src.maisaka.context.messages import LLMContextMessage, SessionBackedMessage
 from src.maisaka.context.planner_messages import extract_quote_ids_from_message_sequence
+from src.plugin_runtime.host.message_utils import PluginMessageUtils
+from src.plugin_runtime.host.reply_extensions import ReplyExtensionExecution, build_reply_extensions_schema
 from src.services import send_service
 
-from .context import BuiltinToolRuntimeContext
+from .context import BuiltinToolRuntimeContext, PostProcessedReplyMessage
 
 logger = get_logger("maisaka_builtin_reply")
-_REPLY_TOOL_INTERNAL_ARGUMENTS = {"msg_id", "set_quote"}
+_REPLY_TOOL_INTERNAL_ARGUMENTS = {"msg_id", "set_quote", "_reply_id", "_plugin_reply_prompt"}
 _TEXT_MODE_VALUES = {"auto", "required", "none"}
-_RICH_REPLY_ARGUMENTS = {"attach_pic", "attach_emoji", "attach_at"}
+
+
+def _rich_reply_attachment_capabilities() -> dict[str, bool]:
+    """返回当前配置下实际可用的附件类型。
+
+    上游已把「丰富性回复」从 experimental.enable_rich_reply 开关改为默认实装，
+    附件可用性改为按类型判定：图片始终可用，表情包与 at 各自受独立配置控制。
+    """
+
+    return {
+        "attach_pic": True,
+        "attach_emoji": bool(config_module.global_config.emoji.use_new_send_logic),
+        "attach_at": bool(config_module.global_config.chat.enable_reply_at),
+    }
 
 
 def _has_rich_reply_attachments(arguments: dict[str, Any]) -> bool:
-    """判断 reply 是否明确要求发送附件，从而允许正文为空。"""
+    """判断 reply 是否明确要求发送当前配置下可用的附件，从而允许正文为空。"""
 
     if not isinstance(arguments, dict):
         return False
-    if str(arguments.get("attach_emoji") or "").strip():
+    capabilities = _rich_reply_attachment_capabilities()
+    if capabilities["attach_emoji"] and str(arguments.get("attach_emoji") or "").strip():
         return True
     for key in ("attach_pic", "attach_at"):
+        if not capabilities[key]:
+            continue
         value = arguments.get(key)
         if isinstance(value, list) and any(item not in (None, "") for item in value):
             return True
         if isinstance(value, (str, dict)) and str(value).strip():
             return True
     return False
+
+
 def _explicit_attachment_only_requested(text: str) -> bool:
     """从规划器思考中识别“只发附件、不要文字”的明确要求。"""
 
@@ -52,8 +76,16 @@ def _explicit_attachment_only_requested(text: str) -> bool:
     no_text = any(
         phrase in normalized
         for phrase in (
-            "不带文字", "不要文字", "不需要文字", "不要附文字", "不附文字",
-            "别加字", "不发文字", "不要加文字", "不加文字", "只发图",
+            "不带文字",
+            "不要文字",
+            "不需要文字",
+            "不要附文字",
+            "不附文字",
+            "别加字",
+            "不发文字",
+            "不要加文字",
+            "不加文字",
+            "只发图",
         )
     )
     return attachment_only and no_text
@@ -147,7 +179,7 @@ async def _run_expression_selector(tool_ctx: BuiltinToolRuntimeContext, system_p
     return (response.content or "").strip()
 
 
-def get_tool_spec() -> ToolSpec:
+def get_tool_spec(context: Optional[ToolAvailabilityContext] = None) -> ToolSpec:
     """获取 reply 工具声明。"""
 
     properties: dict[str, Any] = {
@@ -217,40 +249,41 @@ def get_tool_spec() -> ToolSpec:
                 },
             },
         }
-    if bool(config_module.global_config.experimental.enable_rich_reply):
-        properties["attach_pic"] = {
-            "type": "array",
-            "description": (
-                "可选。随本次回复附加一张或多张上下文图片。每项使用 msg_id + index，"
-                "或使用 media_index=tool_result:<call_id>:<item_index> 指向工具返回媒体。"
-            ),
-            "items": {
-                "type": "object",
-                "properties": {
-                    "msg_id": {
-                        "type": "string",
-                        "description": "图片所在的消息编号。",
-                        "default": "",
-                    },
-                    "media_index": {
-                        "type": "string",
-                        "description": "工具返回媒体索引，例如 tool_result:call_x:1；与 msg_id 二选一。",
-                        "default": "",
-                    },
-                    "index": {
-                        "type": "integer",
-                        "description": "同一消息中的图片序号，从 0 开始。",
-                        "default": 0,
-                    },
+    properties["attach_pic"] = {
+        "type": "array",
+        "description": (
+            "可选。随本次回复附加一张或多张上下文图片。每项使用 msg_id + index，"
+            "或使用 media_index=tool_result:<call_id>:<item_index> 指向工具返回媒体。"
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "msg_id": {
+                    "type": "string",
+                    "description": "图片所在的消息编号。",
+                    "default": "",
+                },
+                "media_index": {
+                    "type": "string",
+                    "description": "工具返回媒体索引，例如 tool_result:call_x:1；与 msg_id 二选一。",
+                    "default": "",
+                },
+                "index": {
+                    "type": "integer",
+                    "description": "同一消息中的图片序号，从 0 开始。",
+                    "default": 0,
                 },
             },
-            "default": [],
-        }
+        },
+        "default": [],
+    }
+    if config_module.global_config.emoji.use_new_send_logic:
         properties["attach_emoji"] = {
             "type": "integer",
             "minimum": 1,
             "description": "可选。从 show_emoji_list 的拼图选择一个表情包，填写图片序号，在文字后单独发送。",
         }
+    if config_module.global_config.chat.enable_reply_at:
         properties["attach_at"] = {
             "type": "array",
             "description": "可选。随本次回复 at 一个或多个目标消息的发送者，填写目标 msg_id。",
@@ -258,12 +291,13 @@ def get_tool_spec() -> ToolSpec:
             "default": [],
         }
 
+    extension_schema = build_reply_extensions_schema(context)
+    if extension_schema is not None:
+        properties["plugin_options"] = extension_schema
+
     return ToolSpec(
         name="reply",
-        description=(
-            "根据当前思考生成并发送一条可见回复。可自由组合文字、图片、表情包和 at；"
-            "启用富回复时也可以只发送附件而不发送文字。"
-        ),
+        description="根据当前思考生成并发送可见回复；需要向用户展示上下文或工具返回的图片时，使用 attach_pic 随回复附加图片。",
         parameters_schema={
             "type": "object",
             "properties": properties,
@@ -274,13 +308,14 @@ def get_tool_spec() -> ToolSpec:
     )
 
 
-def _build_monitor_metadata(reply_result: ReplyGenerationResult) -> dict[str, object]:
+def _build_monitor_metadata(reply_result: ReplyGenerationResult, reply_id: str = "") -> Dict[str, object]:
     """从 reply 结果中提取统一监控详情。"""
 
     monitor_detail = reply_result.monitor_detail
+    metadata: Dict[str, object] = {"reply_id": reply_id} if reply_id else {}
     if isinstance(monitor_detail, dict):
-        return {"monitor_detail": monitor_detail}
-    return {}
+        metadata["monitor_detail"] = monitor_detail
+    return metadata
 
 
 def _build_send_result(
@@ -387,32 +422,30 @@ async def handle_tool(
             f"{tool_ctx.runtime.log_prefix} 检测到 reply 工具参数被重复包裹，已自动解包: "
             f"调用编号={invocation.call_id}"
         )
+    # 工具上下文的 reasoning 是兼容字段，由 Planner 可见正文填充，不包含 Provider 原生 reasoning。
     latest_thought = context.reasoning if context is not None else invocation.reasoning
     target_message_id = str(invocation_arguments.get("msg_id") or "").strip()
     set_quote = bool(invocation_arguments.get("set_quote", True))
     text_mode = str(invocation_arguments.get("text_mode") or "auto").strip().lower()
     if text_mode not in _TEXT_MODE_VALUES:
         text_mode = "auto"
-    rich_reply_enabled = bool(config_module.global_config.experimental.enable_rich_reply)
+    if invocation_arguments.get("attach_at") and not config_module.global_config.chat.enable_reply_at:
+        return tool_ctx.build_failure_result(invocation.tool_name, "回复时 @ 用户已关闭，不能使用 attach_at。")
+    if invocation_arguments.get("attach_emoji") is not None and not config_module.global_config.emoji.use_new_send_logic:
+        return tool_ctx.build_failure_result(
+            invocation.tool_name, "新表情包发送逻辑未开启，请使用 send_emoji 工具。"
+        )
     reply_tool_args = {
         key: value
         for key, value in invocation_arguments.items()
         if key not in _REPLY_TOOL_INTERNAL_ARGUMENTS
     }
-    if not rich_reply_enabled:
-        for key in _RICH_REPLY_ARGUMENTS:
-            reply_tool_args.pop(key, None)
     if not _use_expression_intent():
         reply_tool_args.pop("expression_intent", None)
     has_requested_attachments = _has_rich_reply_attachments(invocation_arguments)
     # 兼容旧模型/旧工具调用：当规划器思考已经明确说“只发图、不带文字”，
     # 即使没有填写新 text_mode 参数，也强制进入纯附件模式。
-    if (
-        text_mode == "auto"
-        and rich_reply_enabled
-        and has_requested_attachments
-        and _explicit_attachment_only_requested(latest_thought)
-    ):
+    if text_mode == "auto" and has_requested_attachments and _explicit_attachment_only_requested(latest_thought):
         text_mode = "none"
         reply_tool_args["text_mode"] = "none"
     enable_reply_quote = bool(config_module.global_config.chat.reply_style.enable_reply_quote)
@@ -424,10 +457,10 @@ async def handle_tool(
             "reply 工具需要提供有效的 `msg_id` 参数。",
         )
 
-    if text_mode == "none" and (not rich_reply_enabled or not has_requested_attachments):
+    if text_mode == "none" and not has_requested_attachments:
         return tool_ctx.build_failure_result(
             invocation.tool_name,
-            "text_mode=none 需要开启富回复并提供图片、表情包或 at 附件。",
+            "text_mode=none 需要提供图片、表情包或 at 附件。",
         )
 
     target_message = tool_ctx.runtime.find_source_message_by_id(target_message_id)
@@ -436,6 +469,32 @@ async def handle_tool(
             invocation.tool_name,
             f"未找到要回复的目标消息，msg_id={to_display_message_id(target_message_id)}",
         )
+
+    extension_execution = ReplyExtensionExecution(
+        context=ToolAvailabilityContext(
+            session_id=tool_ctx.runtime.session_id,
+            stream_id=tool_ctx.runtime.session_id,
+            platform=tool_ctx.runtime.chat_stream.platform,
+        ),
+        reply_message_id=target_message_id,
+        call_id=invocation.call_id,
+    )
+    if invocation_arguments.get("plugin_options"):
+        extension_execution.context.is_group_chat = tool_ctx.runtime.chat_stream.is_group_session
+        extension_execution.context.group_id = tool_ctx.runtime.chat_stream.group_id
+        extension_execution.context.user_id = tool_ctx.runtime.chat_stream.user_id
+    try:
+        await extension_execution.prepare(invocation_arguments.get("plugin_options", {}))
+    except Exception as exc:
+        logger.exception(f"{tool_ctx.runtime.log_prefix} 准备插件回复扩展失败: {exc}")
+        return tool_ctx.build_failure_result(
+            invocation.tool_name, f"准备插件回复扩展失败：{exc}",
+            metadata={"reply_id": extension_execution.reply_id},
+        )
+    if extension_execution.targets:
+        reply_tool_args["plugin_options"] = deepcopy(extension_execution.parameters)
+        reply_tool_args["_reply_id"] = extension_execution.reply_id
+        reply_tool_args["_plugin_reply_prompt"] = extension_execution.extra_prompt
 
     try:
         replyer = replyer_manager.get_replyer(
@@ -449,6 +508,7 @@ async def handle_tool(
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             "获取 Maisaka 回复生成器时发生异常。",
+            metadata={"reply_id": extension_execution.reply_id},
         )
 
     if replyer is None:
@@ -456,6 +516,7 @@ async def handle_tool(
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             "Maisaka 回复生成器当前不可用。",
+            metadata={"reply_id": extension_execution.reply_id},
         )
 
     replyer_chat_history = list(tool_ctx.runtime._chat_history)
@@ -465,7 +526,7 @@ async def handle_tool(
     try:
         tool_ctx.runtime._update_stage_status("Replyer", "生成可见回复")
         success, reply_result = await replyer.generate_reply_with_context(
-            reply_reason=latest_thought,
+            reply_reason="" if str(reply_tool_args.get("reply_reference") or "").strip() else latest_thought,
             stream_id=tool_ctx.runtime.session_id,
             reply_message=target_message,
             chat_history=replyer_chat_history,
@@ -483,10 +544,11 @@ async def handle_tool(
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             "生成可见回复时发生异常。",
+            metadata={"reply_id": extension_execution.reply_id},
         )
 
     reply_text = reply_result.completion.response_text.strip() if success else ""
-    has_rich_reply_attachments = rich_reply_enabled and has_requested_attachments
+    has_rich_reply_attachments = has_requested_attachments
     if text_mode == "none":
         # 即使模型误生成了说明文字，none 模式也必须硬性丢弃，避免“只发图”变成“文字+图”。
         if reply_text:
@@ -500,7 +562,7 @@ async def handle_tool(
     # 没有任何附件时仍保持原有保护，避免发送空消息。
     if not reply_text and not has_rich_reply_attachments:
         reply_result.monitor_detail = build_reply_monitor_detail(reply_result)
-        reply_metadata = _build_monitor_metadata(reply_result)
+        reply_metadata = _build_monitor_metadata(reply_result, extension_execution.reply_id)
         logger.warning(
             f"{tool_ctx.runtime.log_prefix} 回复生成器返回空文本: "
             f"目标消息编号={target_message_id} 错误信息={reply_result.error_message!r}"
@@ -535,31 +597,54 @@ async def handle_tool(
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             "回复文本后处理前 Hook 返回了空回复。",
-            metadata=_build_monitor_metadata(reply_result),
+            metadata=_build_monitor_metadata(reply_result, extension_execution.reply_id),
         )
 
     try:
-        if rich_reply_enabled:
-            reply_items = await tool_ctx.post_process_rich_reply_message_items_async(
-                reply_text,
-                invocation_arguments,
-                **post_process_options,
-            )
-        else:
-            reply_items = await tool_ctx.post_process_reply_message_items_async(
-                reply_text,
-                **post_process_options,
-            )
+        reply_items = await tool_ctx.post_process_reply_message_items_async(
+            reply_text,
+            invocation_arguments,
+            **post_process_options,
+        )
     except Exception as exc:
         reply_result.completion.response_text = reply_text
         reply_result.monitor_detail = build_reply_monitor_detail(reply_result)
-        reply_metadata = _build_monitor_metadata(reply_result)
+        reply_metadata = _build_monitor_metadata(reply_result, extension_execution.reply_id)
         logger.exception(f"{tool_ctx.runtime.log_prefix} 解析回复附件失败: {exc}")
         return tool_ctx.build_failure_result(
             invocation.tool_name,
             f"解析回复附件失败：{exc}",
             metadata=reply_metadata,
         )
+    if extension_execution.targets:
+        try:
+            # 序列化可能读取图片库和文件，放到线程中；整组消息只在发送前转换一次。
+            serialized = await asyncio.to_thread(
+                lambda: [
+                    {
+                        "segments": PluginMessageUtils._message_sequence_to_dict(item.sequence),
+                        "quote_previous": item.quote_previous,
+                    }
+                    for item in reply_items
+                ]
+            )
+            transformed = await extension_execution.transform(reply_text, serialized)
+            reply_items = await asyncio.to_thread(
+                lambda: [
+                    PostProcessedReplyMessage(
+                        sequence=PluginMessageUtils._message_sequence_from_dict(item["segments"]),
+                        quote_previous=item["quote_previous"],
+                    )
+                    for item in transformed
+                ]
+            )
+            extension_execution.ensure_active()
+        except Exception as exc:
+            logger.exception(f"{tool_ctx.runtime.log_prefix} 插件回复扩展处理失败: {exc}")
+            return tool_ctx.build_failure_result(
+                invocation.tool_name, f"插件回复扩展处理失败：{exc}",
+                metadata=_build_monitor_metadata(reply_result, extension_execution.reply_id),
+            )
     reply_sequences = [item.sequence for item in reply_items]
     if text_mode == "none":
         # 附件的描述词仅用于内部展示，不能作为 processed_plain_text 或工具结果中的“文字”。
@@ -572,7 +657,9 @@ async def handle_tool(
     reply_result.completion.response_text = combined_reply_text
     reply_result.text_fragments = reply_segments
     reply_result.monitor_detail = build_reply_monitor_detail(reply_result)
-    reply_metadata = _build_monitor_metadata(reply_result)
+    reply_metadata = _build_monitor_metadata(reply_result, extension_execution.reply_id)
+    if extension_execution.targets:
+        reply_metadata["reply_extensions"] = list(extension_execution.parameters)
     sent_message_ids: list[str] = []
     send_results: list[dict[str, Any]] = []
     try:
@@ -659,8 +746,19 @@ async def handle_tool(
         )
 
     target_user_info = target_message.message_info.user_info
-    target_user_name = target_user_info.user_cardname or target_user_info.user_nickname or target_user_info.user_id
     bot_name = config_module.global_config.bot.nickname.strip() or "MaiSaka"
+    if is_bot_self(tool_ctx.runtime.chat_stream.platform, target_user_info.user_id):
+        # 自身消息只是回复的引用锚点，不能把其作者当作实际收件人。
+        target_user_name = ""
+        reply_receipt_prefix = f'"{bot_name}"已生成并向当前会话发送了'
+    else:
+        target_user_name = target_user_info.user_cardname or target_user_info.user_nickname or target_user_info.user_id
+        reply_receipt_prefix = f'"{bot_name}"已生成并向"{target_user_name}"发送了'
+    reply_receipt = (
+        f"{reply_receipt_prefix}纯附件回复"
+        if text_mode == "none"
+        else f'{reply_receipt_prefix}回复"{combined_reply_text}"'
+    )
 
     if tool_ctx.runtime.chat_stream.platform == CLI_PLATFORM_NAME:
         tool_ctx.append_guided_reply_to_chat_history(combined_reply_text)
@@ -688,11 +786,7 @@ async def handle_tool(
         )
     return tool_ctx.build_success_result(
         invocation.tool_name,
-        (
-            f'"{bot_name}"已生成并向"{target_user_name}"发送了纯附件回复'
-            if text_mode == "none"
-            else f'"{bot_name}"已生成并向"{target_user_name}"发送了回复"{combined_reply_text}"'
-        ),
+        reply_receipt,
         structured_content={
             "msg_id": target_message_id,
             "set_quote": set_quote,

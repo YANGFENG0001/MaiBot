@@ -43,6 +43,7 @@ from src.llm_models.payload_content.context_item import (
     replace_output_projection,
 )
 from src.llm_models.payload_content.context_protocol import ContextProtocolMode
+from src.llm_models.request_snapshot import serialize_context_items_snapshot
 from src.maisaka.context.message_adapter import parse_speaker_content
 from src.maisaka.context.messages import (
     LLMContextMessage,
@@ -403,7 +404,9 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         if raw_emoji:
             lines.append(f"当前文字回复后还会单独发送已选中的第 {raw_emoji} 号表情包，无需在正文中输出序号。")
 
-        return "\n".join(lines)
+        if not lines:
+            return ""
+        return self._load_prompt("reply_attachments", attachments="\n".join(lines))
 
     @staticmethod
     def _get_chat_prompt_for_chat(chat_id: str, is_group_chat: Optional[bool]) -> str:
@@ -593,26 +596,13 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         )
 
     @staticmethod
-    def _build_reply_reference_lines(reply_reason: str, reply_reference: str) -> List[str]:
-        """将 Planner 内容和 reply 工具参考信息直接合并。"""
+    def _build_reply_reference_message(reply_reason: str, reply_reference: str) -> str:
+        """有 reply reference 时只使用参考，否则使用 Planner 正文。"""
 
-        reference_lines: List[str] = []
-        normalized_reply_reason = reply_reason.strip()
-        if normalized_reply_reason:
-            reference_lines.append(normalized_reply_reason)
-        normalized_reply_reference = reply_reference.strip()
-        if normalized_reply_reference:
-            reference_lines.append(normalized_reply_reference)
-        return reference_lines
-
-    @classmethod
-    def _build_reply_reference_message(cls, reply_reason: str, reply_reference: str) -> str:
-        """构建独立的回复信息参考消息。"""
-
-        reference_lines = cls._build_reply_reference_lines(reply_reason, reply_reference)
-        if not reference_lines:
-            return ""
-        return "\n\n".join(reference_lines)
+        normalized_reference = reply_reference.strip()
+        if normalized_reference:
+            return normalized_reference
+        return reply_reason.strip()
 
     def _build_final_user_message(
         self,
@@ -1025,6 +1015,25 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
 
         return not cls._is_replyer_filtered_history_message(message)
 
+    def _persist_reply_preview(
+        self, result: ReplyGenerationResult, *, stream_id: Optional[str], reply_reason: str
+    ) -> None:
+        """在持久化边界统一收集图片，返回给监控的数据不携带大块图片编码。"""
+        if result.request_messages or result.output_items:
+            # 同一次保存收集请求和输出图片，监控结果只保留已提交保存的图片引用。
+            preview = PromptCLIVisualizer.build_prompt_preview_access(
+                result.request_messages,
+                category=self.request_type,
+                chat_id=self._resolve_session_id(stream_id),
+                request_kind=self.request_type,
+                selection_reason=reply_reason,
+                output_items=result.output_items,
+                generation_attempts=result.generation_attempts,
+                keep_base64=False,
+            )
+            result.request_messages = preview.payload["request_items"]
+            result.output_items = preview.payload["output_items"]
+
     async def generate_reply_with_context(
         self,
         extra_info: str = "",
@@ -1046,6 +1055,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         reply_tool_args: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, ReplyGenerationResult]:
         def finalize(success_value: bool) -> Tuple[bool, ReplyGenerationResult]:
+            self._persist_reply_preview(result, stream_id=stream_id, reply_reason=reply_reason)
             result.monitor_detail = build_reply_monitor_detail(result)
             return success_value, result
 
@@ -1065,6 +1075,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
             return finalize(False)
 
         active_reply_tool_args = self._normalize_reply_tool_args(reply_tool_args)
+        plugin_reply_prompt = str(active_reply_tool_args.get("_plugin_reply_prompt", ""))
         if chat_history is None:
             result.error_message = "聊天历史为空"
             return finalize(False)
@@ -1130,7 +1141,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     request_type=self.request_type,
                     task_name=default_task_name,
                     model_name="",
-                    extra_prompt="",
+                    extra_prompt=plugin_reply_prompt,
                     attempt=retry_count + 1,
                     retry_count=retry_count,
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
@@ -1144,7 +1155,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     active_reply_tool_args = dict(before_request_kwargs["reply_tool_args"])
             except Exception as exc:
                 logger.warning(f"Maisaka 回复器 before_request Hook 调用失败，将继续使用当前请求参数: {exc}")
-                before_request_kwargs = {}
+                before_request_kwargs = {"extra_prompt": plugin_reply_prompt}
 
             active_task_name = str(before_request_kwargs.get("task_name") or default_task_name).strip()
             if not active_task_name:
@@ -1289,10 +1300,8 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
 
             result.completion.request_prompt = prompt_preview
             result.request_message_count = len(request_messages)
-            result.request_messages = PromptCLIVisualizer.build_structured_context_item_payload(
-                request_messages,
-                keep_base64=False,
-            )
+            # 内存中的结果只做序列化；图片引用在最终记录保存时统一生成。
+            result.request_messages = serialize_context_items_snapshot(request_messages)
             llm_ms = round((time.perf_counter() - llm_started_at) * 1000, 2)
             response_text = (generation_result.response or "").strip()
             hook_original_response = response_text
@@ -1414,15 +1423,12 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
             break
 
         generation_result.generation_attempts = tuple(all_generation_attempts)
+        # 纯附件回复（text_mode=none）按设计没有正文，但只要带了附件仍算生成成功。
         has_rich_attachments = any(
-            bool(active_reply_tool_args.get(key))
-            for key in ("attach_pic", "attach_emoji", "attach_at")
+            bool(active_reply_tool_args.get(key)) for key in ("attach_pic", "attach_emoji", "attach_at")
         )
         result.success = bool(response_text) or has_rich_attachments
-        result.output_items = PromptCLIVisualizer.build_structured_context_item_payload(
-            generation_result.output_items,
-            keep_base64=False,
-        )
+        result.output_items = serialize_context_items_snapshot(generation_result.output_items)
         result.generation_attempts = self._serialize_generation_attempts(generation_result)
         result.completion = LLMCompletionResult(
             request_prompt=prompt_preview,

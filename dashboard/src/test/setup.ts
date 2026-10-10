@@ -57,6 +57,13 @@ if (typeof Element !== 'undefined') {
   Element.prototype.scrollIntoView = () => {}
 }
 
+// 注意：**不要**在这里给 Element.prototype 补 animate（Web Animations API）。
+// framer-motion 只要探测到 Element.prototype.animate 存在，就会把 duration 类动画
+// 交给 WAAPI 驱动，并等待 animation.finished；jsdom 下的假动画永远不会 finish，
+// 会让 AnimatePresence mode="wait" 的退场动画永久挂起、后续内容不再挂载
+// （表现为 model.test.tsx 等页面测试大面积失败）。
+// 需要 animate 的测试请在各自的测试文件内局部打桩，见 components/ui/__tests__/toast.test.tsx。
+
 if (typeof HTMLCanvasElement !== 'undefined') {
   // getContext：jsdom 未内置 Canvas 实现，直接调用会抛错。
   // recharts / 图表组件在测量文字宽度时会取 2d 上下文，这里给一个足够用的空实现。

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { DraftNumberInput } from '@/components/ui/draft-number-input'
 import { Input } from '@/components/ui/input'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Slider } from '@/components/ui/slider'
@@ -45,6 +46,8 @@ import {
   Save,
   RotateCcw,
   Loader2,
+  MoreHorizontal,
+  FileArchive,
   Search,
   ArrowLeft,
   Info,
@@ -76,6 +79,7 @@ import type {
   PluginRuntimeComponentType,
 } from '@/lib/plugin-api'
 import { PluginIcon } from './plugins/PluginIcon'
+import { ZipInstallDialog } from './plugins/ZipInstallDialog'
 import { getPluginType, getPluginTypeLabel } from './plugins/types'
 import { AdapterHostPolicyPanel } from './plugin-config/AdapterHostPolicyPanel'
 import { AdapterPolicyDefaultsCard } from './plugin-config/AdapterPolicyDefaultsCard'
@@ -1322,7 +1326,7 @@ function PluginConfigEditor({ plugin, onBack, initialTab }: PluginConfigEditorPr
             {showHostPolicy && <TabsTrigger value="host-policy">黑白名单规则</TabsTrigger>}
             <TabsTrigger value="details">详情</TabsTrigger>
           </TabsList>
-          {/* 黑白名单页的账号与保存工具栏渲染到页签同一行，节省纵向空间 */}
+          {/* 黑白名单页的账号、分组操作与保存工具栏渲染到页签同一行，节省纵向空间 */}
           {showHostPolicy && <div ref={setHostPolicyToolbar} className="min-w-0 flex-1" />}
         </div>
         <TabsContent value="settings" className="mt-4">
@@ -1503,6 +1507,7 @@ function PluginConfigPageContent() {
   const { triggerRestart, isRestarting } = useRestart()
   const adapterManagement = isAdapterManagementPath()
   const [editingMCP, setEditingMCP] = useState(false)
+  const [zipInstallOpen, setZipInstallOpen] = useState(false)
 
   const {
     plugins,
@@ -1647,23 +1652,28 @@ function PluginConfigPageContent() {
               size="icon"
               className="shrink-0"
               onClick={loadPlugins}
-              disabled={loading}
               aria-label="刷新插件列表"
               title="刷新插件列表"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 shrink-0 px-2 sm:px-3"
-              onClick={() => triggerRestart()}
-              disabled={isRestarting}
-              title="重启麦麦"
-            >
-              <RotateCw className={`h-4 w-4 ${isRestarting ? 'animate-spin' : ''} sm:mr-2`} />
-              <span className="hidden sm:inline">重启麦麦</span>
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="shrink-0" aria-label="更多操作" title="更多操作">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setZipInstallOpen(true)} disabled={isRestarting}>
+                  <FileArchive className="mr-2 h-4 w-4" />从 ZIP 安装插件
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => triggerRestart()} disabled={isRestarting}>
+                  <RotateCw className={`mr-2 h-4 w-4 ${isRestarting ? 'animate-spin' : ''}`} />重启麦麦
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <ZipInstallDialog open={zipInstallOpen} onOpenChange={setZipInstallOpen} onInstalled={loadPlugins} />
           </div>
         )}
 
@@ -1805,7 +1815,7 @@ function PluginConfigPageContent() {
                 <div className="divide-border/80 divide-y">
                   {group.plugins.map((plugin) => {
               const pluginActing = actingPluginId === plugin.id
-              const pluginDisabled = isPluginDisabled(plugin)
+              const pluginDisabled = plugin.enabled === false
               const updateState = getPluginUpdateState(plugin)
               const pluginLoadFailed = isPluginLoadFailed(plugin)
               const pluginVersionIncompatible = isPluginVersionIncompatible(plugin)
@@ -1871,9 +1881,11 @@ function PluginConfigPageContent() {
                         <h3 className="min-w-0 text-sm leading-snug font-medium break-words sm:truncate sm:text-base">
                           {plugin.manifest.name}
                         </h3>
-                        <Badge variant="outline" className="flex-shrink-0 text-xs">
-                          {getPluginTypeLabel(plugin)}
-                        </Badge>
+                        {!adapterManagement && (
+                          <Badge variant="outline" className="flex-shrink-0 text-xs">
+                            {getPluginTypeLabel(plugin)}
+                          </Badge>
+                        )}
                         {statusMeta.showsBadge !== false && (
                           <Badge
                             variant="outline"
@@ -1962,8 +1974,9 @@ function PluginConfigPageContent() {
                       variant="outline"
                       size="sm"
                       data-plugin-update-button="true"
-                      className="relative h-9 w-9 p-0"
+                      className={`relative h-9 w-9 p-0 ${checkingUpdates ? 'text-primary disabled:opacity-100' : ''}`}
                       disabled={pluginActing || !updateState.canUpdate}
+                      aria-busy={checkingUpdates || pluginActing}
                       title={updateState.title}
                       aria-label={updateState.title || '更新/升级'}
                       onClick={(event) => openUpdatePluginDialog(plugin, event)}
@@ -1974,9 +1987,7 @@ function PluginConfigPageContent() {
                           aria-hidden="true"
                         />
                       )}
-                      {pluginActing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : checkingUpdates ? (
+                      {pluginActing || checkingUpdates ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <ArrowUp className="h-4 w-4" />

@@ -57,6 +57,10 @@ class PluginMeta:
         self.dependencies: List[str] = list(manifest.plugin_dependency_ids)
         self.component_handlers: Dict[str, str] = {}
         self.llm_provider_handlers: Dict[str, str] = {}
+        # 归一化后的插件配置快照。由 runner 在「准备激活」阶段（_prepare_plugin_activation）
+        # 写入，供随后的注册阶段复用（RegisterPluginPayload.normalized_config），
+        # 这样同一轮激活里配置只读取/归一化一次。
+        self.normalized_config: Dict[str, Any] = {}
 
 
 class PluginLoader:

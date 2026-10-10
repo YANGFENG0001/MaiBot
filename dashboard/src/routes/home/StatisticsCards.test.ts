@@ -437,7 +437,9 @@ describe('StatisticsCards 卡片渲染与状态', () => {
     expect(screen.getByTestId('bar-chart')).toHaveAttribute('data-first-ts', HOURLY_TS)
     expect(screen.getByTestId('chart-yaxis-left')).toBeInTheDocument()
     expect(screen.getByTestId('chart-yaxis-right')).toBeInTheDocument()
-    expect(screen.getByTestId('chart-legend')).toBeInTheDocument()
+    // 上游 1.3.5 用自绘的 StatisticsChartLegend 取代了 recharts 的 <Legend>，
+    // 不再走 mock 出来的 chart-legend。
+    expect(document.querySelector('[data-home-chart-guide="true"]')).toBeInTheDocument()
   })
 
   it('各卡片在 resolvedLanguage 为空时都能回退到 language 完成格式化', () => {

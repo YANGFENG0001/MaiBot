@@ -24,6 +24,7 @@ import {
 import type { InstalledPlugin, MaimaiVersion } from '@/lib/plugin-api'
 import type { PluginInfo } from '@/types/plugin'
 import { useToast } from '@/hooks/use-toast'
+import { unifiedWsClient } from '@/lib/unified-ws'
 import { getPluginType } from '../../plugins/types'
 import { getPluginConfigRoutePath, isAdapterManagementPath } from '../utils'
 
@@ -45,7 +46,7 @@ export interface PluginUpdateState {
 }
 
 export interface PluginListGroup {
-  key: 'success' | 'loading' | 'offline' | 'failed' | 'disabled'
+  key: 'success' | 'loading' | 'offline' | 'failed' | 'disabled' | 'inactive' | 'stopped' | 'not_loaded'
   label: string
   dotClassName: string
   plugins: InstalledPlugin[]
@@ -126,10 +127,16 @@ export function usePluginList() {
   const [actingPluginId, setActingPluginId] = useState<string | null>(null)
   const [marketPluginsById, setMarketPluginsById] = useState<Record<string, PluginInfo>>({})
   const [maimaiVersion, setMaimaiVersion] = useState<MaimaiVersion | null>(null)
-  const [checkingUpdates, setCheckingUpdates] = useState(false)
+  const [checkingUpdates, setCheckingUpdates] = useState(!adapterOnly && !initialTarget.pluginId)
+  // 用「本次检测是否在途」而不是「是否已检测过」：检测结束后要允许再次触发，
+  // 否则手动「检查更新」与关闭详情面板后的刷新都会被永久跳过。
   const updateCheckInFlightRef = useRef(false)
+  const initialTargetHandledRef = useRef(false)
+  const installedRequestRef = useRef(0)
+  const runtimeSubscriptionRef = useRef(0)
 
   const openPluginConfig = (plugin: InstalledPlugin, tabId?: string | null) => {
+    initialTargetHandledRef.current = true
     setSelectedPlugin(plugin)
     setSelectedPluginTab(tabId ?? undefined)
     const params = new URLSearchParams({ plugin: plugin.id })
@@ -140,6 +147,7 @@ export function usePluginList() {
   }
 
   const closePluginConfig = () => {
+    initialTargetHandledRef.current = true
     setSelectedPlugin(null)
     setSelectedPluginTab(undefined)
     window.history.replaceState(null, '', getPluginConfigRoutePath())
@@ -161,22 +169,15 @@ export function usePluginList() {
     updateCheckInFlightRef.current = true
     setCheckingUpdates(true)
     try {
-      const installedRequest = options.installedPlugins
-        ? Promise.resolve(options.installedPlugins)
-        : options.forceRefresh
-          ? getInstalledPlugins({ forceRefresh: true })
-          : Promise.resolve(plugins)
-      const [marketPlugins, currentMaimaiVersion, allInstalled] = await Promise.all([
+      const [marketPlugins, currentMaimaiVersion, installed] = await Promise.all([
         fetchPluginList({ forceRefresh: options.forceRefresh }),
         getMaimaiVersion().catch((error) => {
           console.warn('获取麦麦版本信息失败，跳过插件更新兼容性检查:', error)
           return null
         }),
-        installedRequest,
+        // 调用方已经把安装列表拿到手时直接复用，避免多打一次安装列表接口。
+        options.installedPlugins ? Promise.resolve(options.installedPlugins) : Promise.resolve(plugins),
       ])
-      const installed = adapterOnly
-        ? allInstalled.filter((plugin) => getPluginType(plugin) === 'adapter')
-        : allInstalled
       const nextMarketPluginsById: Record<string, PluginInfo> = {}
       for (const marketPlugin of marketPlugins) {
         nextMarketPluginsById[marketPlugin.id] = marketPlugin
@@ -186,21 +187,8 @@ export function usePluginList() {
       }
       const normalizedMaimaiVersion =
         currentMaimaiVersion?.version === '0.0.0' ? null : currentMaimaiVersion
-
-      setPlugins(installed)
       setMarketPluginsById(nextMarketPluginsById)
       setMaimaiVersion(normalizedMaimaiVersion)
-      setSelectedPlugin((currentPlugin) => {
-        if (!currentPlugin) return currentPlugin
-        return installed.find((plugin) => plugin.id === currentPlugin.id) ?? currentPlugin
-      })
-
-      if (!selectedPlugin && initialTarget.pluginId) {
-        const targetPlugin = installed.find((plugin) => plugin.id === initialTarget.pluginId)
-        if (targetPlugin) {
-          openPluginConfig(targetPlugin, initialTarget.tabId)
-        }
-      }
 
       if (options.showToast) {
         const updateCount = installed.filter((plugin) => {
@@ -221,6 +209,7 @@ export function usePluginList() {
         })
       }
     } catch (error) {
+      // 检测失败时保留上一次的市场数据，避免整页更新状态被清空。
       console.warn('加载插件市场版本信息失败:', error)
       if (options.showToast) {
         toast({
@@ -235,16 +224,19 @@ export function usePluginList() {
     }
   }
 
-  // 加载插件列表（含深链接自动选中）
-  const loadPlugins = async (): Promise<InstalledPlugin[] | null> => {
-    setLoading(true)
+  // 加载插件列表（含深链接自动选中）。返回本次生效的列表，供调用方直接喂给更新检测，
+  // 避免同一次初始化里重复拉取安装列表。
+  const refreshPlugins = async (background = false): Promise<InstalledPlugin[] | null> => {
+    const requestId = ++installedRequestRef.current
+    if (!background) setLoading(true)
     try {
       const allInstalled = await getInstalledPlugins()
+      if (requestId !== installedRequestRef.current) return null
       const installed = adapterOnly
         ? allInstalled.filter((plugin) => getPluginType(plugin) === 'adapter')
         : allInstalled
       setPlugins(installed)
-      if (!selectedPlugin && initialTarget.pluginId) {
+      if (!initialTargetHandledRef.current && initialTarget.pluginId) {
         const targetPlugin = installed.find((plugin) => plugin.id === initialTarget.pluginId)
         if (targetPlugin) {
           openPluginConfig(targetPlugin, initialTarget.tabId)
@@ -252,6 +244,7 @@ export function usePluginList() {
       }
       return installed
     } catch (error) {
+      if (requestId !== installedRequestRef.current) return null
       toast({
         title: '加载插件列表失败',
         description: error instanceof Error ? error.message : '未知错误',
@@ -259,13 +252,22 @@ export function usePluginList() {
       })
       return null
     } finally {
-      setLoading(false)
+      if (requestId === installedRequestRef.current) setLoading(false)
     }
+  }
+  // 对外暴露的仍是「无返回值」的 loadPlugins：上游把它当作通用刷新动作，
+  // plugin-config.tsx 会直接透传给 ZipInstallDialog 的 onInstalled
+  // （其契约是 () => Promise<void>），上游新增的用例也按 void 使用它。
+  // 需要拿到本次列表的调用方（下面的初始化流程）直接用 refreshPlugins。
+  const loadPlugins = async (): Promise<void> => {
+    await refreshPlugins()
   }
 
   useEffect(() => {
+    // 先拿到安装列表再检测更新：一次初始化只打一次安装列表接口，
+    // 且适配器管理页（adapterOnly）本来就不需要市场版本数据。
     const initializePluginList = async () => {
-      const installed = await loadPlugins()
+      const installed = await refreshPlugins()
       if (!adapterOnly && installed) {
         await checkPluginUpdates({ forceRefresh: true, installedPlugins: installed })
       }
@@ -273,6 +275,48 @@ export function usePluginList() {
     void initializePluginList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const subscriptionId = ++runtimeSubscriptionRef.current
+    let cancelled = false
+    let refreshing = false
+    let pending = false
+
+    // 合并连续注册通知；若请求期间又有变化，完成后再取一次，避免旧响应覆盖新状态。
+    const refreshFromRuntime = async () => {
+      pending = true
+      if (refreshing) return
+      refreshing = true
+      try {
+        while (pending && !cancelled) {
+          pending = false
+          await refreshPlugins(true)
+        }
+      } finally {
+        refreshing = false
+      }
+    }
+    const removeListener = unifiedWsClient.addEventListener((message) => {
+      if (message.domain === 'plugin_runtime' && message.topic === 'main') {
+        void refreshFromRuntime()
+      }
+    })
+    void unifiedWsClient.subscribe('plugin_runtime', 'main').then(() => {
+      if (cancelled && runtimeSubscriptionRef.current === subscriptionId) {
+        void unifiedWsClient.unsubscribe('plugin_runtime', 'main')
+      }
+    }).catch((error) => console.error('订阅插件运行状态失败:', error))
+    return () => {
+      cancelled = true
+      installedRequestRef.current += 1
+      removeListener()
+      void unifiedWsClient.unsubscribe('plugin_runtime', 'main').catch((error) => {
+        console.error('退订插件运行状态失败:', error)
+      })
+    }
+    // refreshPlugins 使用本次页面的筛选设置；重连由统一客户端重新订阅并获取快照。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adapterOnly])
 
   const handleShowUpdateOnlyChange = (enabled: boolean) => {
     setShowUpdateOnly(enabled)
@@ -298,11 +342,11 @@ export function usePluginList() {
 
   // 统计数据 / 状态派生
   const isPluginDisabled = (plugin: InstalledPlugin) =>
-    plugin.disabled === true || plugin.enabled === false
+    plugin.load_status === 'disabled' || (!plugin.load_status && (plugin.disabled === true || plugin.enabled === false))
   const isPluginLoadSuccess = (plugin: InstalledPlugin) =>
-    !isPluginDisabled(plugin) && (plugin.load_status === 'success' || plugin.loaded === true)
+    plugin.load_status === 'success'
   const isPluginLoading = (plugin: InstalledPlugin) =>
-    !isPluginDisabled(plugin) && plugin.load_status === 'loading'
+    plugin.load_status === 'loading' || plugin.load_status === 'stopping'
   const isPluginOffline = (plugin: InstalledPlugin) =>
     !isPluginDisabled(plugin) && plugin.load_status === 'offline'
   const isPluginCircuitOpen = (plugin: InstalledPlugin) =>
@@ -312,7 +356,7 @@ export function usePluginList() {
   const isPluginCircuitActive = (plugin: InstalledPlugin) =>
     isPluginCircuitOpen(plugin) || isPluginCircuitHalfOpen(plugin)
   const isPluginLoadFailed = (plugin: InstalledPlugin) =>
-    !isPluginDisabled(plugin) && !isPluginLoading(plugin) && !isPluginOffline(plugin) && !isPluginLoadSuccess(plugin)
+    plugin.load_status === 'failed'
   const isPluginVersionIncompatible = (plugin: InstalledPlugin) => {
     if (!isPluginLoadFailed(plugin)) {
       return false
@@ -361,49 +405,11 @@ export function usePluginList() {
     .filter(Boolean)
     .join('，')
 
-  const getPluginStatusBarClassName = (plugin: InstalledPlugin) => {
-    if (isPluginDisabled(plugin)) {
-      return 'bg-muted-foreground/45'
-    }
-    if (isPluginCircuitOpen(plugin)) {
-      return 'bg-orange-500'
-    }
-    if (isPluginCircuitHalfOpen(plugin)) {
-      return 'bg-yellow-500'
-    }
-    if (isPluginLoading(plugin)) {
-      return 'bg-sky-500'
-    }
-    if (isPluginOffline(plugin)) {
-      return 'bg-slate-500'
-    }
-    if (isPluginLoadFailed(plugin)) {
-      return 'bg-red-500'
-    }
-    return 'bg-emerald-500'
-  }
-  const getPluginStatusLabel = (plugin: InstalledPlugin) => {
-    if (isPluginDisabled(plugin)) {
-      return '已禁用'
-    }
-    if (isPluginCircuitOpen(plugin)) {
-      const remainingSec = Math.ceil(plugin.circuit_status?.remaining_sec ?? 0)
-      return remainingSec > 0 ? `熔断中 ${remainingSec}s` : '熔断中'
-    }
-    if (isPluginCircuitHalfOpen(plugin)) {
-      return '半开测试'
-    }
-    if (isPluginLoading(plugin)) {
-      return '加载中'
-    }
-    if (isPluginOffline(plugin)) {
-      return '已离线'
-    }
-    if (isPluginLoadFailed(plugin)) {
-      return '启动失败'
-    }
-    return '已启用'
-  }
+  const getPluginStatusBarClassName = (plugin: InstalledPlugin) =>
+    getPluginStatusMeta(plugin).dotClassName
+  const getPluginStatusLabel = (plugin: InstalledPlugin) =>
+    isPluginLoadSuccess(plugin) ? '已启用' : isPluginLoadFailed(plugin) && !isPluginCircuitActive(plugin)
+      ? '启动失败' : getPluginStatusMeta(plugin).label
   const getPluginStatusMeta = (plugin: InstalledPlugin): PluginStatusMeta => {
     if (isPluginDisabled(plugin)) {
       return { dotClassName: 'bg-muted-foreground/45', label: '已禁用', showsBadge: false }
@@ -428,7 +434,7 @@ export function usePluginList() {
     if (isPluginLoading(plugin)) {
       return {
         dotClassName: 'bg-sky-500',
-        label: '加载中',
+        label: plugin.load_status === 'stopping' ? '正在停止' : '加载中',
         badgeClassName: 'border-sky-600 text-sky-600',
         icon: 'loading' as const,
       }
@@ -443,6 +449,13 @@ export function usePluginList() {
     }
     if (isPluginLoadSuccess(plugin)) {
       return { dotClassName: 'bg-emerald-500', label: '加载成功', showsBadge: false }
+    }
+    if (!isPluginLoadFailed(plugin)) {
+      return {
+        dotClassName: 'bg-slate-500',
+        label: plugin.load_status === 'inactive' ? '未激活' : plugin.load_status === 'stopped' ? '运行时未启动' : '尚未加载',
+        badgeClassName: 'border-slate-500 text-slate-600',
+      }
     }
     return {
       dotClassName: 'bg-red-500',
@@ -468,8 +481,9 @@ export function usePluginList() {
       return { canUpdate: false, hasUpdate: false, title: '正在检查更新' }
     }
 
-    const repositoryUrl = getPluginRepositoryUrl(plugin)
-    if (!repositoryUrl) {
+    // 只要插件清单里有仓库地址，就允许用户从仓库拉取最新版本，
+    // 不依赖插件市场是否收录、也不要求市场版本号更高。
+    if (!getPluginRepositoryUrl(plugin)) {
       return { canUpdate: false, hasUpdate: false, title: '插件清单中没有仓库地址，无法更新/升级' }
     }
 
@@ -522,6 +536,9 @@ export function usePluginList() {
     { key: 'offline', label: '已离线', dotClassName: 'bg-slate-500' },
     { key: 'failed', label: '加载失败', dotClassName: 'bg-red-500' },
     { key: 'disabled', label: '已禁用', dotClassName: 'bg-muted-foreground/45' },
+    { key: 'inactive', label: '未激活', dotClassName: 'bg-amber-500' },
+    { key: 'stopped', label: '运行时未启动', dotClassName: 'bg-slate-500' },
+    { key: 'not_loaded', label: '尚未加载', dotClassName: 'bg-slate-500' },
   ]
   const getPluginListGroupKey = (plugin: InstalledPlugin): PluginListGroup['key'] => {
     if (isPluginLoadSuccess(plugin)) {
@@ -536,7 +553,10 @@ export function usePluginList() {
     if (isPluginLoadFailed(plugin)) {
       return 'failed'
     }
-    return 'disabled'
+    if (isPluginDisabled(plugin)) return 'disabled'
+    if (plugin.load_status === 'inactive') return 'inactive'
+    if (plugin.load_status === 'stopped') return 'stopped'
+    return 'not_loaded'
   }
   const visiblePluginGroups = pluginListGroupDefinitions
     .map((group) => ({
@@ -554,7 +574,7 @@ export function usePluginList() {
     try {
       const toggleResult = await togglePlugin(plugin.id)
       toast({
-        title: toggleResult.enabled ? '插件已启动' : '插件已关闭',
+        title: toggleResult.runtime_status === 'stopped' ? '启停配置已保存' : toggleResult.enabled ? '插件已启动' : '插件已关闭',
         description: toggleResult.message || `${plugin.manifest.name} 状态已更新`,
       })
       await loadPlugins()

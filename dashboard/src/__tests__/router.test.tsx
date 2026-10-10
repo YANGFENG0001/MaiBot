@@ -34,7 +34,10 @@ vi.mock('@/hooks/use-auth', () => ({
 vi.mock('@/routes/auth', () => ({ AuthPage: StubPage }))
 vi.mock('@/routes/setup/index.tsx', () => ({ SetupPage: StubPage }))
 vi.mock('@/routes/index', () => ({ IndexPage: StubPage }))
-vi.mock('@/routes/plugin-webui', () => ({ PluginWebUIPage: StubPage, PluginWebUIManagerPage: StubPage }))
+vi.mock('@/routes/plugin-webui', () => ({
+  PluginWebUIPage: StubPage,
+  PluginWebUIManagerPage: StubPage,
+}))
 vi.mock('@/routes/logs', () => ({
   LogViewerPage: StubPage,
   ReasoningLogViewerPage: StubPage,
@@ -44,7 +47,6 @@ vi.mock('@/routes/reply-effects', () => ({ ReplyEffectsPage: StubPage }))
 vi.mock('@/routes/config/bot', () => ({ BotConfigPage: StubPage }))
 vi.mock('@/routes/config/model', () => ({ ModelConfigPage: StubPage }))
 vi.mock('@/routes/config/prompts', () => ({ PromptManagementPage: StubPage }))
-vi.mock('@/routes/prompt-generator', () => ({ PromptGeneratorPage: StubPage }))
 vi.mock('@/routes/resource/emoji/index.tsx', () => ({ EmojiManagementPage: StubPage }))
 vi.mock('@/routes/resource/expression/index.tsx', () => ({ ExpressionManagementPage: StubPage }))
 vi.mock('@/routes/person', () => ({ PersonManagementPage: StubPage }))
@@ -92,7 +94,6 @@ const expectedPaths = [
   '/config/bot',
   '/config/model',
   '/config/prompts',
-  '/config/prompt-generator',
   '/resource/emoji',
   '/resource/expression',
   '/resource/jargon',
@@ -137,6 +138,7 @@ type RouteNodeLike = {
   parentRoute?: { id?: string }
   options: {
     id?: string
+    beforeLoad?: unknown
     component?: unknown
     errorComponent?: unknown
   }
@@ -191,15 +193,35 @@ describe('router 路由表', () => {
     expect(actualKeys).toEqual(expectedKeys)
   })
 
-  it('每个页面路径都配置了懒加载组件', () => {
+  it('除兼容跳转入口外，每个页面路径都配置了懒加载组件', () => {
     const routesByPath = router.routesByPath as unknown as Record<
       string,
       { options: { component?: unknown } } | undefined
     >
-    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings', '/extensions'].includes(path))) {
+    for (const path of expectedPaths.filter(
+      (path) => !['/mcp-settings', '/settings', '/extensions'].includes(path)
+    )) {
       const route = routesByPath[path]
       expect(route, `routesByPath 缺少 ${path}`).toBeDefined()
       expect(typeof route?.options.component, `${path} 缺少组件`).toBe('function')
+    }
+  })
+
+  it('旧扩展入口跳转插件扩展页', () => {
+    const beforeLoad = getRoutesByPath()['/extensions']?.options.beforeLoad as () => void
+    expect(typeof beforeLoad).toBe('function')
+    try {
+      beforeLoad()
+      throw new Error('预期跳转插件扩展页')
+    } catch (error) {
+      expect(isRedirect(error)).toBe(true)
+      if (isRedirect(error)) {
+        expect(error.options).toMatchObject({
+          to: '/plugin-config',
+          hash: 'webui-extensions',
+          replace: true,
+        })
+      }
     }
   })
 
@@ -331,7 +353,9 @@ describe('router 路由表', () => {
 
   it('所有懒加载页面工厂均可 preload 到桩组件', async () => {
     const routesByPath = getRoutesByPath()
-    for (const path of expectedPaths.filter((path) => !['/mcp-settings', '/settings', '/extensions'].includes(path))) {
+    for (const path of expectedPaths.filter(
+      (path) => !['/mcp-settings', '/settings', '/extensions'].includes(path)
+    )) {
       const component = routesByPath[path]?.options.component as LazyRouteComponent | undefined
       expect(typeof component, `${path} 缺少组件`).toBe('function')
       expect(typeof component?.preload, `${path} 不是懒加载组件`).toBe('function')

@@ -15,15 +15,15 @@ vi.mock('react-i18next', () => ({
 }))
 
 vi.mock('@tanstack/react-router', () => ({
-  // 上游 1.3.2 把设置页内嵌进「麦麦设置」页后，改为从 router 读取当前查询串、并经由
-  // router 跳转（/config/bot?...&mode=webui）。这里直接以 jsdom 的 window.location.search
-  // 作为 searchStr 来源，使 window.history.replaceState 构造的 URL 依然生效。
+  // 上游 1.3.5 把设置页从「内嵌进麦麦设置（/config/bot?mode=webui）」改回独立路由 /settings，
+  // 旧链接的重定向下沉到 /config/bot 的 beforeLoad；组件本身仍从 router 读取 searchStr 与 hash。
+  // 这里直接以 jsdom 的 window.location 作为来源，使 window.history.replaceState 构造的 URL 依然生效。
   useNavigate: () => navigateMock,
   useRouterState: ({
     select,
   }: {
-    select: (state: { location: { searchStr: string } }) => unknown
-  }) => select({ location: { searchStr: window.location.search } }),
+    select: (state: { location: { searchStr: string; hash: string } }) => unknown
+  }) => select({ location: { searchStr: window.location.search, hash: window.location.hash } }),
 }))
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -144,12 +144,38 @@ describe('设置页入口与关于页', () => {
 
     await user.click(screen.getByRole('button', { name: 'settings.tabs.about' }))
 
-    // 上游 1.3.2 把设置页内嵌进麦麦设置页：切换标签不再自行改写 window.history 与滚动位置，
-    // 而是经 router 跳转到 /config/bot?...&mode=webui（滚动由外层页面统一管理）。
+    // 上游 1.3.5 起设置页回到独立路由：切换标签不再自行改写 window.history 与滚动位置，
+    // 而是经 router 跳转到 /settings?tab=...（滚动由外层页面统一管理）。
     expect(navigateMock).toHaveBeenLastCalledWith({
-      href: '/config/bot?tab=about&mode=webui',
+      href: '/settings?tab=about',
       replace: true,
     })
+  })
+
+  it('切换标签时保留其他查询参数，并剔除遗留的 mode=webui', async () => {
+    window.history.replaceState(null, '', '/settings?mode=webui&tab=security&extra=keep')
+    const user = userEvent.setup()
+
+    render(<SettingsPage />)
+    expect(screen.getByText('安全页内容')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'settings.tabs.other' }))
+
+    // 上游把 mode=webui 视为旧内嵌链接的残留标记，跳转时会一并删除。
+    expect(navigateMock).toHaveBeenLastCalledWith({
+      href: '/settings?tab=other&extra=keep',
+      replace: true,
+    })
+  })
+
+  it('切回外观页时删除 tab 参数，也不保留 mode', async () => {
+    window.history.replaceState(null, '', '/settings?tab=about&mode=webui')
+    const user = userEvent.setup()
+
+    render(<SettingsPage />)
+    await user.click(screen.getByRole('button', { name: 'settings.tabs.appearance' }))
+
+    expect(navigateMock).toHaveBeenLastCalledWith({ href: '/settings', replace: true })
   })
 
   it('查询参数中的无效标签回退到外观页', () => {
@@ -158,6 +184,33 @@ describe('设置页入口与关于页', () => {
 
     expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'appearance')
     expect(screen.getByText('外观页内容')).toBeInTheDocument()
+  })
+
+  it('hash 页签在组件读取侧仍然兼容旧书签', () => {
+    window.history.replaceState(null, '', '/settings#other')
+    render(<SettingsPage />)
+
+    // 组件仍会读 state.location.hash，作为 /config/bot?mode=webui 旧链接重定向后的兜底。
+    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'other')
+    expect(screen.getByText('其他页内容')).toBeInTheDocument()
+  })
+
+  it('未知标签值在读取侧回退外观页，写入侧不校验', async () => {
+    window.history.replaceState(null, '', '/settings?tab=about')
+    const user = userEvent.setup()
+
+    render(<SettingsPage />)
+    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
+
+    await user.click(screen.getByTestId('settings-invalid-tab'))
+
+    // handleTabChange 不校验取值（校验只发生在派生 activeTab 时），未知值会原样写进 URL；
+    // 待路由更新后 searchStr 变为 tab=not-a-tab，读取侧才会回退到 appearance。
+    expect(navigateMock).toHaveBeenLastCalledWith({
+      href: '/settings?tab=not-a-tab',
+      replace: true,
+    })
+    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
   })
 
   it('关于页展示版本、技术栈、许可证和安全的外部链接属性', () => {
@@ -178,39 +231,9 @@ describe('设置页入口与关于页', () => {
     )
   })
 
-  it('不再自行解析 hash：hash 页签由 /settings 路由重定向统一兼容', () => {
-    window.history.replaceState(null, '', '/settings#other')
-    render(<SettingsPage />)
-
-    // 上游 1.3.2 把「旧书签的 tab 参数与 hash」兼容逻辑搬到 /settings 路由的 beforeLoad
-    // （重定向到 /config/bot?tab=...&mode=webui），设置页组件本身只读 searchStr，
-    // 因此这里无查询参数时直接回退外观页。
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'appearance')
-    expect(screen.getByText('外观页内容')).toBeInTheDocument()
-  })
-
-  it('未知标签值在读取侧回退外观页，写入侧不校验', async () => {
-    window.history.replaceState(null, '', '/settings?tab=about')
-    const user = userEvent.setup()
-
-    render(<SettingsPage />)
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
-
-    await user.click(screen.getByTestId('settings-invalid-tab'))
-
-    // 上游的 handleTabChange 不校验取值（校验只发生在派生 activeTab 时），未知值会原样写进 URL；
-    // 待路由更新后 searchStr 变为 tab=not-a-tab，读取侧才会回退到 appearance。
-    expect(navigateMock).toHaveBeenLastCalledWith({
-      href: '/config/bot?tab=not-a-tab&mode=webui',
-      replace: true,
-    })
-    expect(screen.getByTestId('settings-tabs')).toHaveAttribute('data-value', 'about')
-  })
-
   it('设置页不再自带滚动容器与可折叠标题，滚动交由外层页面管理', () => {
     render(<SettingsPage />)
 
-    // 上游 1.3.2 把设置页内嵌进麦麦设置页，移除了页面自身的 ScrollArea 与标题折叠逻辑。
     expect(screen.queryByTestId('settings-scroll-viewport')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'settings.title' })).not.toBeInTheDocument()
     expect(screen.getByTestId('settings-tabs')).toBeInTheDocument()

@@ -4,6 +4,8 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
 import { HomeCardManager } from '../home/HomeCardManager'
 import { IndexPage } from '../index'
 import { backendApi } from '@/lib/http'
@@ -22,6 +24,7 @@ const originalRandomUUID = globalThis.crypto.randomUUID
 const mocks = vi.hoisted(() => ({
   backendGet: vi.fn(),
   getBotConfigCached: vi.fn(),
+  getBotConfigSchema: vi.fn(),
   getModelConfigCached: vi.fn(),
   getReviewStats: vi.fn(),
   getLocalCacheStats: vi.fn(),
@@ -52,8 +55,29 @@ vi.mock('react-i18next', () => {
   const i18n = { resolvedLanguage: 'zh-CN', language: 'zh-CN' }
   return { useTranslation: () => ({ t, i18n }) }
 })
+// 上游 1.3.5 把首页内部快捷方式从 <a href> 改成 <Link to>（见 index.tsx 的 internalUrl 分支），
+// mock 必须保留真实链接语义，否则依赖 role="link" / href 的断言会全部失效。
 vi.mock('@tanstack/react-router', () => ({
-  Link: ({ children }: { children: ReactNode }) => <span>{children}</span>,
+  Link: ({
+    children,
+    to,
+    search,
+    hash,
+    ...rest
+  }: {
+    children: ReactNode
+    to?: string
+    search?: Record<string, string>
+    hash?: string
+  }) => {
+    const query = new URLSearchParams(search ?? {}).toString()
+    const href = `${to ?? ''}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    )
+  },
 }))
 vi.mock('@/lib/restart-context', () => ({
   RestartProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -103,6 +127,9 @@ vi.mock('recharts', () => {
 vi.mock('@/lib/http', () => ({ backendApi: { get: mocks.backendGet } }))
 vi.mock('@/lib/config-api', () => ({
   getBotConfigCached: mocks.getBotConfigCached,
+  // 上游 1.3.5 让 useQuickShortcuts 经 react-query 拉取 bot 配置 schema 来生成配置类快捷方式，
+  // 缺这个导出会让 IndexPage 全部用例在 render 阶段就抛错。
+  getBotConfigSchema: mocks.getBotConfigSchema,
   getModelConfigCached: mocks.getModelConfigCached,
 }))
 vi.mock('@/lib/expression-api', () => ({ getReviewStats: mocks.getReviewStats }))
@@ -255,7 +282,7 @@ function stubBackendGet(options?: {
 async function renderFreshIndexPage() {
   vi.resetModules()
   const { IndexPage: FreshIndexPage } = await import('../index')
-  const view = render(<FreshIndexPage />)
+  const view = render(withQueryClient(<FreshIndexPage />))
   // 让并行挂载的状态/缓存/一言请求在断言前落盘，避免 act 噪声。
   await act(async () => {
     await Promise.resolve()
@@ -323,6 +350,20 @@ const richLocalCacheStats = {
   },
 }
 
+// IndexPage 依赖 useQuickShortcuts 的 react-query，测试里直接渲染需自备 QueryClientProvider。
+// 所有渲染 IndexPage 的路径（含 resetModules 后的全新实例、自定义 Provider 包裹）
+// 都必须经过这里，否则会在 render 阶段抛 "No QueryClient set"。
+function withQueryClient(children: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  })
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+}
+
+function renderIndexPage() {
+  return render(withQueryClient(<IndexPage />))
+}
+
 beforeEach(() => {
   vi.mocked(backendApi.get).mockImplementation((path: string) => {
     if (path.includes('/system/status')) return Promise.resolve(botStatus) as never
@@ -333,6 +374,8 @@ beforeEach(() => {
     return Promise.resolve({}) as never
   })
   vi.mocked(configApi.getBotConfigCached).mockResolvedValue({} as never)
+  // 空 schema ⇒ 不产生配置类快捷方式，与引入 react-query 之前的行为一致。
+  vi.mocked(configApi.getBotConfigSchema).mockResolvedValue({ schema: { nested: {} } } as never)
   vi.mocked(configApi.getModelConfigCached).mockResolvedValue({} as never)
   vi.mocked(expressionApi.getReviewStats).mockResolvedValue({ unchecked: 3, passed: 10 } as never)
   vi.mocked(systemApi.getLocalCacheStats).mockResolvedValue({
@@ -347,7 +390,7 @@ beforeEach(() => {
 
 describe('IndexPage 特征化', () => {
   it('初始加载调用各数据源 API（仪表盘/状态/审核统计/本地缓存/配置）', async () => {
-    render(<IndexPage />)
+    renderIndexPage()
     await waitFor(() =>
       expect(backendApi.get).toHaveBeenCalledWith(
         '/api/webui/statistics/dashboard',
@@ -363,8 +406,14 @@ describe('IndexPage 特征化', () => {
   })
 
   it('一言通过原生 fetch 拉取', async () => {
-    render(<IndexPage />)
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining('hitokoto')))
+    renderIndexPage()
+    // 上游 1.3.5 给一言请求加了 AbortController（超时/取消），第二个实参是 signal。
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining('hitokoto'),
+        expect.objectContaining({ signal: expect.anything() })
+      )
+    )
   })
 
   it('缺少 randomUUID 时仍可停用默认一言、维护自定义列表，并在列表为空时留空', async () => {
@@ -374,7 +423,7 @@ describe('IndexPage 特征化', () => {
       value: undefined,
     })
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
 
     await screen.findByText(/测试一言/)
     await user.click(screen.getByRole('button', { name: 'home.hitokoto.edit' }))
@@ -409,7 +458,7 @@ describe('IndexPage 特征化', () => {
   })
 
   it('运行状态与精简运行时长纵向排列，并与功能灯分层展示', async () => {
-    render(<IndexPage />)
+    renderIndexPage()
 
     const runtimeLabel = await screen.findByText('home.botStatus.running')
     expect(runtimeLabel).toHaveAttribute('data-maibot-runtime-label', 'true')
@@ -438,7 +487,7 @@ describe('IndexPage 特征化', () => {
 
   it('活动卡片可点击翻转到最近在线图表，并提供轻微悬停高亮', async () => {
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
 
     const statusCard = await screen.findByRole('button', {
       name: 'home.botStatus.showRecentOnline',
@@ -487,7 +536,7 @@ describe('IndexPage 特征化', () => {
         rowModes: {},
       })
     )
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('V1.0.0')).toBeInTheDocument()
     expect(screen.getByText(`V${APP_VERSION}`)).toBeInTheDocument()
@@ -534,7 +583,7 @@ describe('IndexPage 特征化', () => {
   })
 
   it('存储管理入口使用完整文案和方向箭头', async () => {
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.storage.manage')).toBeInTheDocument()
     expect(document.querySelector('[data-home-storage-action="true"]')).toBeInTheDocument()
@@ -571,7 +620,7 @@ describe('IndexPage 特征化', () => {
 
   it('切换时间范围以新的 hours 重新拉取仪表盘', async () => {
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
     // 每张统计积木都拥有独立的轻量时间范围按钮。
     const sevenDayButtons = await screen.findAllByRole('button', { name: /home\.timeRange\.7d/ })
     await user.click(sevenDayButtons[0])
@@ -584,7 +633,7 @@ describe('IndexPage 特征化', () => {
   })
 
   it('统计卡片隐藏描述并分别显示全部与聊天缓存命中率', async () => {
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('50.00%')).toBeInTheDocument()
     expect(screen.getByText('60.00%')).toBeInTheDocument()
@@ -641,7 +690,7 @@ describe('IndexPage 仪表盘错误与加载', () => {
 
   it('已有数据时刷新失败改为横幅重试，不卸载整页', async () => {
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
     await screen.findByText('home.botStatus.running')
     cleanup()
 
@@ -649,7 +698,7 @@ describe('IndexPage 仪表盘错误与加载', () => {
     stubBackendGet({
       dashboard: () => Promise.reject(new Error('刷新失败')),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('刷新失败')).toBeInTheDocument()
     expect(document.querySelector('[data-home-page="true"]')).toBeInTheDocument()
@@ -679,7 +728,7 @@ describe('IndexPage 平台账号引导', () => {
     stubBackendGet({
       platform: { config: {} },
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.platformGuide.title')).toBeInTheDocument()
     expect(screen.getByText('home.platformGuide.description')).toBeInTheDocument()
@@ -690,14 +739,14 @@ describe('IndexPage 平台账号引导', () => {
     stubBackendGet({
       platform: { config: { bot: { qq_account: 0 } } },
     })
-    const view = render(<IndexPage />)
+    const view = renderIndexPage()
     expect(await screen.findByText('home.platformGuide.title')).toBeInTheDocument()
     view.unmount()
 
     stubBackendGet({
       platform: { config: { bot: { qq_account: '   ' } } },
     })
-    render(<IndexPage />)
+    renderIndexPage()
     expect(await screen.findByText('home.platformGuide.title')).toBeInTheDocument()
   })
 
@@ -707,7 +756,7 @@ describe('IndexPage 平台账号引导', () => {
         config: { bot: { qq_account: '0', platforms: ['qq:0', 'napcat:123456:extra'] } },
       },
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     await screen.findByText('home.botStatus.running')
     expect(screen.queryByText('home.platformGuide.title')).not.toBeInTheDocument()
@@ -717,7 +766,7 @@ describe('IndexPage 平台账号引导', () => {
     stubBackendGet({
       platform: { config: { bot: { platforms: ['qq:', 'napcat:0', null] } } },
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.platformGuide.title')).toBeInTheDocument()
   })
@@ -727,7 +776,7 @@ describe('IndexPage 平台账号引导', () => {
     stubBackendGet({
       platform: () => Promise.reject(new Error('配置服务不可用')),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     await screen.findByText('home.botStatus.running')
     expect(screen.queryByText('home.platformGuide.title')).not.toBeInTheDocument()
@@ -743,7 +792,7 @@ describe('IndexPage 功能灯与运行时状态', () => {
     vi.mocked(configApi.getModelConfigCached).mockResolvedValue({
       config: { model_task_config: { vlm: { model_list: ['gpt-4v'] } } },
     } as never)
-    render(<IndexPage />)
+    renderIndexPage()
 
     const visual = await screen.findByRole('status', {
       name: 'home.botStatus.visualEnabled：home.botStatus.enabled',
@@ -756,7 +805,7 @@ describe('IndexPage 功能灯与运行时状态', () => {
   })
 
   it('配置缺失时功能灯保持关闭', async () => {
-    render(<IndexPage />)
+    renderIndexPage()
 
     const visual = await screen.findByRole('status', {
       name: 'home.botStatus.visualEnabled：home.botStatus.disabled',
@@ -772,7 +821,7 @@ describe('IndexPage 功能灯与运行时状态', () => {
     stubBackendGet({
       bot: { ...botStatus, running: false },
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     const runtimeLabel = await screen.findByText('home.botStatus.stopped')
     expect(runtimeLabel).toHaveClass('text-destructive')
@@ -818,7 +867,7 @@ describe('IndexPage 存储卡片', () => {
     const user = userEvent.setup()
     vi.mocked(systemApi.getLocalCacheStats).mockResolvedValue(richLocalCacheStats as never)
     expireModuleCaches(16 * 60_000)
-    render(<IndexPage />)
+    renderIndexPage()
 
     // 总量与数据库条目都是 2.0 MB
     expect(await screen.findAllByText('2.0 MB')).toHaveLength(2)
@@ -859,7 +908,7 @@ describe('IndexPage 存储卡片', () => {
 describe('IndexPage 默认隐藏的统计卡片', () => {
   it('可通过添加面板恢复花费、模型分布、模型明细和日统计卡片', async () => {
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
     await screen.findByText('home.botStatus.running')
 
     expect(document.querySelector('[data-home-card-id="builtin:cost-trend"]')).not.toBeInTheDocument()
@@ -915,7 +964,7 @@ describe('IndexPage 默认隐藏的统计卡片', () => {
         enabled: true,
       },
     ])
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('插件卡片标题')).toBeInTheDocument()
     expect(screen.getByText('插件卡片正文')).toBeInTheDocument()
@@ -929,7 +978,7 @@ describe('IndexPage 一言与版本条', () => {
     mockBrowserFetch({
       hitokoto: () => jsonResponse({}, false, 500),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText(/home\.hitokotoFallback/)).toHaveTextContent(
       'home.hitokotoFallbackFrom'
@@ -940,14 +989,14 @@ describe('IndexPage 一言与版本条', () => {
     mockBrowserFetch({
       hitokoto: () => jsonResponse({ hitokoto: '谁说的', from_who: '作者' }),
     })
-    const first = render(<IndexPage />)
+    const first = renderIndexPage()
     expect(await screen.findByText(/谁说的/)).toHaveTextContent('作者')
     first.unmount()
 
     mockBrowserFetch({
       hitokoto: () => jsonResponse({ hitokoto: '无出处' }),
     })
-    render(<IndexPage />)
+    renderIndexPage()
     expect(await screen.findByText(/无出处/)).toHaveTextContent('home.unknownSource')
   })
 
@@ -955,7 +1004,7 @@ describe('IndexPage 一言与版本条', () => {
     mockBrowserFetch({
       hitokoto: () => new Promise(() => undefined),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     await screen.findByText('home.botStatus.running')
     const hitokoto = document.querySelector('[data-home-hitokoto="true"]')
@@ -965,9 +1014,11 @@ describe('IndexPage 一言与版本条', () => {
 
   it('modern 主题下一言使用虚线边框与斜体', async () => {
     render(
-      <ThemeProviderContext.Provider value={makeThemeState('modern')}>
-        <IndexPage />
-      </ThemeProviderContext.Provider>
+      withQueryClient(
+        <ThemeProviderContext.Provider value={makeThemeState('modern')}>
+          <IndexPage />
+        </ThemeProviderContext.Provider>
+      )
     )
 
     const quote = await screen.findByText(/测试一言/)
@@ -977,9 +1028,11 @@ describe('IndexPage 一言与版本条', () => {
 
   it('future-retro 主题下一言使用衬线字重而不是斜体', async () => {
     render(
-      <ThemeProviderContext.Provider value={makeThemeState('future-retro')}>
-        <IndexPage />
-      </ThemeProviderContext.Provider>
+      withQueryClient(
+        <ThemeProviderContext.Provider value={makeThemeState('future-retro')}>
+          <IndexPage />
+        </ThemeProviderContext.Provider>
+      )
     )
 
     const quote = await screen.findByText(/测试一言/)
@@ -1001,7 +1054,7 @@ describe('IndexPage 一言与版本条', () => {
     mockBrowserFetch({
       hitokoto: () => jsonResponse({}, false, 503),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText(/本地备用/)).toHaveTextContent('手帐')
   })
@@ -1009,7 +1062,7 @@ describe('IndexPage 一言与版本条', () => {
   it('损坏的一言本地设置回退到默认远程源', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     window.localStorage.setItem('maibot-home-hitokoto-settings-v1', '{not-json')
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText(/测试一言/)).toBeInTheDocument()
     expect(errorSpy).toHaveBeenCalledWith('读取一言设置失败:', expect.any(Error))
@@ -1025,7 +1078,7 @@ describe('IndexPage 一言与版本条', () => {
           required_webui_version: '9.9.9',
         }),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.versionCard.mismatch')).toBeInTheDocument()
     expect(document.querySelector('[data-home-command-strip="true"]')).toHaveClass('text-amber-600')
@@ -1040,7 +1093,7 @@ describe('IndexPage 一言与版本条', () => {
       github: () =>
         jsonResponse([{ tag_name: 'v1.0.0', draft: false, prerelease: false, html_url: '' }]),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.versionCard.unknown')).toBeInTheDocument()
     expect(screen.queryByText(/home\.versionCard\.updateAvailable/)).not.toBeInTheDocument()
@@ -1060,7 +1113,7 @@ describe('IndexPage 一言与版本条', () => {
           },
         ]),
     })
-    render(<IndexPage />)
+    renderIndexPage()
 
     const updateLink = await screen.findByRole('link', {
       name: /home\.versionCard\.updateAvailable V1\.2\.0/,
@@ -1075,7 +1128,7 @@ describe('IndexPage 一言与版本条', () => {
       targets.push((event as CustomEvent<UpdateNoticeTarget>).detail)
     }
     window.addEventListener(UPDATE_NOTICE_OPEN_EVENT, onNotice)
-    render(<IndexPage />)
+    renderIndexPage()
     await screen.findByText('V1.0.0')
 
     const versionButtons = document.querySelectorAll('[data-home-version-button="true"]')
@@ -1090,7 +1143,7 @@ describe('IndexPage 一言与版本条', () => {
 describe('IndexPage 快捷操作与审核器', () => {
   it('默认快捷操作可重启、打开审核器，关闭后刷新统计', async () => {
     const user = userEvent.setup()
-    render(<IndexPage />)
+    renderIndexPage()
     await screen.findByText('home.botStatus.running')
 
     expect(document.querySelector('[data-quick-action-badge="true"]')).toHaveTextContent('3')
@@ -1117,7 +1170,7 @@ describe('IndexPage 快捷操作与审核器', () => {
       unchecked: 128,
       passed: 1,
     } as never)
-    render(<IndexPage />)
+    renderIndexPage()
 
     await screen.findByText('home.botStatus.running')
     expect(document.querySelector('[data-quick-action-badge="true"]')).toHaveTextContent('99+')
@@ -1126,7 +1179,7 @@ describe('IndexPage 快捷操作与审核器', () => {
   it('快捷操作为空时引导添加，对话框支持搜索、勾选与恢复默认', async () => {
     const user = userEvent.setup()
     window.localStorage.setItem('maibot-home-quick-shortcuts', JSON.stringify(['unknown:none']))
-    render(<IndexPage />)
+    renderIndexPage()
 
     expect(await screen.findByText('home.quickActions.empty')).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'home.quickActions.add' }))
@@ -1169,7 +1222,7 @@ describe('IndexPage 快捷操作与审核器', () => {
 
   it('重启进行中时按钮禁用并旋转图标', async () => {
     mocks.isRestarting = true
-    render(<IndexPage />)
+    renderIndexPage()
 
     const restartButton = await screen.findByRole('button', {
       name: 'home.quickActions.restarting',

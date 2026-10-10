@@ -1,12 +1,33 @@
-/* 英文和数字用 Pixelify Sans 像素字（OFL 协议，见 public/fonts/PixelifySans-OFL.txt）。
-   只覆盖拉丁字符，中文落到后面的黑体。 */
+/* Jersey 20 像素字（OFL 协议，见 public/fonts/Jersey20-OFL.txt）。
+   只覆盖拉丁字符，中文落到 --mil-font-zh。
+   这款字同字号下比中文矮一截，用 size-adjust 放大到和中文视觉等高。 */
 @font-face {
-  font-family: 'Pixelify Sans';
-  src: url('/fonts/PixelifySans-Variable.ttf') format('truetype');
-  font-weight: 400 700;
+  font-family: 'Jersey 20';
+  src: url('/fonts/Jersey20-Regular.ttf') format('truetype');
+  font-weight: 400;
   font-style: normal;
   font-display: swap;
+  size-adjust: 118%;
   unicode-range: U+0000-024F, U+2000-206F, U+20A0-20CF, U+2190-21FF;
+}
+
+/* 备选像素字（均为 OFL 协议，见 public/fonts/*-OFL.txt）：
+   Departure Mono 只含拉丁字符；Ark Pixel 12px 简体中文裁成 GB2312 常用字 + 中文标点。 */
+@font-face {
+  font-family: 'Departure Mono';
+  src: url('/fonts/DepartureMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Ark Pixel 12px SC';
+  src: url('/fonts/ArkPixel12-ZhHans.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+3000-9FFF, U+FF00-FFEF;
 }
 
 /* 千禧风格（data-dashboard-style='millennium'）
@@ -334,7 +355,7 @@
 :root[data-dashboard-style='millennium']
   [data-dashboard-header='true']
   div:has(> [data-dashboard-workspace-tabs='true']) {
-  margin-right: auto;
+  margin-right: 0;
 }
 
 :root[data-dashboard-style='millennium'] [data-dashboard-workspace-tabs='true'] {
@@ -399,20 +420,18 @@
   color: var(--mil-on-ink);
 }
 
-/* 散热栅格：贴在第一个图标键左边的装饰 */
+/* 散热栅格参与顶栏布局，宽度不足时收缩，避免盖住搜索框。 */
 @media (min-width: 1100px) {
   :root[data-dashboard-style='millennium']
     [data-dashboard-header='true']
-    a[data-dashboard-header-action='true'][href='/settings']::before {
+    [data-dashboard-header-vent='true'] {
     background: repeating-linear-gradient(90deg, var(--mil-vent) 0 3px, transparent 3px 8px);
-    content: '';
+    display: block;
+    flex: 0 1 120px;
     height: 22px;
+    min-width: 0;
+    margin-inline: 1rem;
     pointer-events: none;
-    position: absolute;
-    right: calc(100% + 1.25rem);
-    top: 50%;
-    transform: translateY(-50%);
-    width: 120px;
   }
 }
 
@@ -658,6 +677,20 @@
   color: var(--mil-on-ink);
 }
 
+/* 设置页面菜单的一行包含钉固与切页两个操作，高亮使用整行键帽材质。 */
+:root[data-dashboard-style='millennium']
+  [data-config-section-menu-row='true'][data-dashboard-button='true']:has(> [role='menuitem'][data-highlighted]) {
+  background-color: var(--mil-on);
+  box-shadow: var(--mil-pressed);
+  color: var(--mil-on-ink);
+}
+
+:root[data-dashboard-style='millennium']
+  [data-config-section-menu-row='true'] > [role='menuitem'][data-highlighted] {
+  background-color: transparent;
+  color: inherit;
+}
+
 /* ---------- 标签页：一排键帽，选中的是按下去的绿键 ---------- */
 
 :root[data-dashboard-style='millennium'] [data-dashboard-tabs-list='true'] {
@@ -703,6 +736,15 @@
   color: var(--mil-on-ink);
   padding-bottom: calc(0.25rem + 1px);
   transform: translateY(2px);
+}
+
+/* 钉固入口收在内凹槽中，固定边框与横向滚动内容分开。 */
+:root[data-dashboard-style='millennium'] [data-config-pinned-tabs-frame='true'] {
+  background-color: var(--mil-panel);
+  border: 2px solid var(--mil-line);
+  box-shadow:
+    inset 3px 3px 0 var(--mil-lo),
+    inset -2px -2px 0 var(--mil-hi);
 }
 
 /* ---------- 开关、复选框、单选 ---------- */
@@ -768,6 +810,21 @@
   color: var(--mil-ink);
 }
 
+/* 插件市场的数量读数：和旁边的搜索框一样做成下沉的小屏幕，不用细线框 */
+:root[data-dashboard-style='millennium'] [data-plugin-market-count-badge='true'] {
+  background-color: var(--mil-screen) !important;
+  background-image: var(--mil-screen-tex);
+  background-size: 3px 3px;
+  border: 2px solid var(--mil-line);
+  border-radius: 0;
+  box-shadow: var(--mil-sunk);
+  color: var(--mil-screen-ink);
+  font-weight: 700;
+  height: 2.875rem;
+  margin: 0 4px;
+  white-space: nowrap;
+}
+
 /* ---------- 表格：整张表是一块屏幕 ---------- */
 
 :root[data-dashboard-style='millennium'] [data-dashboard-table-wrapper='true'] {
@@ -818,11 +875,61 @@
 /* ---------- 滚动条 ---------- */
 
 :root[data-dashboard-style='millennium'] [data-dashboard-scrollbar-thumb='true'] {
-  background-color: var(--mil-drop);
+  background-color: var(--mil-key);
+  border: 2px solid var(--mil-line);
+  border-radius: 0;
+  box-shadow: var(--mil-bevel);
+}
+
+:root[data-dashboard-style='millennium'] [data-dashboard-scrollbar='true'] {
+  background-color: var(--mil-shell);
+  border-radius: 0;
+}
+
+:root[data-dashboard-style='millennium'] [data-dashboard-scrollbar='true'][data-orientation='vertical'] {
+  width: 14px;
+}
+
+:root[data-dashboard-style='millennium'] [data-dashboard-scrollbar='true'][data-orientation='horizontal'] {
+  height: 14px;
 }
 
 :root[data-dashboard-style='millennium'] * {
   scrollbar-color: var(--mil-drop) transparent;
+}
+
+/* Chromium 设置 scrollbar-color 后会忽略原生滑块的形状样式，
+   使用 WebKit 绘制路径实现方角和塑料按键边框；其他浏览器保留标准配色。 */
+@supports selector(::-webkit-scrollbar) {
+  :root[data-dashboard-style='millennium'] * {
+    scrollbar-color: auto;
+  }
+
+  :root[data-dashboard-style='millennium'] *::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+  }
+
+  :root[data-dashboard-style='millennium'] *::-webkit-scrollbar-track {
+    background: var(--mil-shell);
+    border-radius: 0;
+    box-shadow: inset 2px 2px 0 var(--mil-lo);
+  }
+
+  :root[data-dashboard-style='millennium'] *::-webkit-scrollbar-thumb {
+    background: var(--mil-key);
+    border: 2px solid var(--mil-line);
+    border-radius: 0;
+    box-shadow: var(--mil-bevel);
+  }
+
+  :root[data-dashboard-style='millennium'] *::-webkit-scrollbar-thumb:hover {
+    background: var(--mil-key-hover);
+  }
+
+  :root[data-dashboard-style='millennium'] *::-webkit-scrollbar-corner {
+    background: var(--mil-shell);
+  }
 }
 
 /* ---------- 图表：深色示波屏，浅色描线 ---------- */
@@ -920,6 +1027,7 @@
   background-image: none;
   border-color: transparent;
   box-shadow: none;
+  margin-top: 7px;
 }
 
 /* 首页的数字排版是按窄体字调的，这里的字更宽，字号收一档避免被截断 */
@@ -1369,15 +1477,22 @@
 
 :root[data-dashboard-style='millennium'] [data-home-page='true'] [data-maibot-runtime-label='true'] {
   color: var(--mil-screen-ink);
+  flex-shrink: 0;
   font-size: 2.375rem;
   letter-spacing: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 :root[data-dashboard-style='millennium'] [data-home-page='true'] [data-maibot-runtime-uptime='true'] {
   color: var(--mil-screen-ink);
   font-size: 0.8125rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding-bottom: 0.25rem;
   text-align: right;
+  white-space: normal;
 }
 
 :root[data-dashboard-style='millennium'] [data-home-page='true'] [data-maibot-feature-lights='true'] {
@@ -1585,9 +1700,12 @@
   color: var(--mil-on-ink);
 }
 
-/* 日志页会往顶栏左侧塞一组视图切换；千禧下工作区键也在左边，把它让到工作区键右侧 */
+/* 日志视图切换占据实际布局宽度，不再通过固定偏移挤占工作区键和搜索框。 */
 :root[data-dashboard-style='millennium'] [data-dashboard-header='true'] #log-viewer-topbar-tabs {
-  left: 13.5rem;
+  position: static;
+  /* Tailwind 4 的位移使用独立 translate 属性，需与 transform 一并清除。 */
+  translate: none;
+  transform: none;
 }
 
 :root[data-dashboard-style='millennium']
@@ -1836,6 +1954,40 @@
   background-position: 0 0;
 }
 
+/* 顶栏垫在侧栏下方时，机壳上沿整条都由顶栏来画：铭牌和侧栏顶部让出底色、边线和投影，
+   不再由两个元素各画一段去拼，非整数缩放下拼接处也就不会出现细缝或错位。 */
+@media (min-width: 1024px) {
+  :root[data-dashboard-style='millennium']
+    [data-dashboard-header-underlay='true']
+    [data-dashboard-logo-area='true'] {
+    background: transparent;
+    border-bottom-color: transparent;
+    box-shadow: none;
+  }
+
+  :root[data-dashboard-style='millennium']
+    [data-dashboard-header-underlay='true']
+    [data-dashboard-sidebar='true'] {
+    background: transparent;
+  }
+
+  /* 侧栏自身的机壳底色只从顶栏投影下沿开始铺。 */
+  :root[data-dashboard-style='millennium']
+    [data-dashboard-header-underlay='true']
+    [data-dashboard-sidebar='true']::before {
+    background-attachment: fixed;
+    background-color: var(--mil-shell);
+    background-image: var(--mil-speck);
+    background-position: 0 0;
+    background-size: 5px 5px;
+    content: '';
+    inset: calc(var(--layout-sidebar-logo-height) + 5px) 0 0 0;
+    pointer-events: none;
+    position: absolute;
+    z-index: -1;
+  }
+}
+
 /* ---------- 麦麦聊天侧栏：两块屏幕，「与麦麦聊天」固定，聊天流独立滚动 ---------- */
 
 /* 列表容器本身不再是屏幕，两个分组各有一块 */
@@ -1889,6 +2041,13 @@
   [data-chat-sidebar-screen='true']
   > [data-chat-sidebar-item='true'] {
   margin-top: 0;
+}
+
+/* 聊天流列表的滚动条浮在内容上方，每行右侧让出它的宽度，免得盖住设置按钮 */
+:root[data-dashboard-style='millennium']
+  [data-chat-sidebar-section='observed']
+  [data-chat-sidebar-item='true'] {
+  padding-right: 16px;
 }
 
 :root[data-dashboard-style='millennium']
@@ -1951,8 +2110,17 @@
   position: relative;
 }
 
+/* 防滑纹是浮在标题条右上角的，给标题让出它的宽度，长标题才不会叠上去。
+   监控推理卡片使用无装饰的紧凑布局，不绘制防滑纹，避免与右侧来源标签重叠。 */
 :root[data-dashboard-style='millennium']
-  [data-dashboard-card-header='true']:not(:has(button, input, [role='tablist'], [role='combobox']))::after {
+  [data-dashboard-card='true']:not([data-maisaka-trace-card='true'])
+  > [data-dashboard-card-header='true']:not(:has(button, input, [role='tablist'], [role='combobox'])) {
+  padding-right: calc(0.875rem + 34px + 0.75rem);
+}
+
+:root[data-dashboard-style='millennium']
+  [data-dashboard-card='true']:not([data-maisaka-trace-card='true'])
+  > [data-dashboard-card-header='true']:not(:has(button, input, [role='tablist'], [role='combobox']))::after {
   background: repeating-linear-gradient(90deg, var(--mil-vent) 0 2px, transparent 2px 6px);
   content: '';
   height: 10px;
@@ -2153,8 +2321,20 @@
 
 /* 正文和小字用普通黑体保证可读；像素字留给铭牌、大标题、首页的大数字和丝印标题 */
 :root[data-dashboard-style='millennium'] {
-  --mil-font-pixel:
-    'Pixelify Sans', 'Fusion Pixel 12px Proportional SC', 'Zpix', 'Noto Sans SC',
+  --mil-font-en: 'Departure Mono';
+  --mil-font-zh:
+    'Fusion Pixel 12px Proportional SC', 'Zpix', 'Noto Sans SC', 'Microsoft YaHei UI', sans-serif;
+  --mil-font-pixel: var(--mil-font-en), var(--mil-font-zh);
+}
+
+/* 设置 → 外观里可切换：英文/数字 html[data-millennium-font]，中文 html[data-millennium-cjk-font] */
+:root[data-dashboard-style='millennium'][data-millennium-font='jersey'] {
+  --mil-font-en: 'Jersey 20';
+}
+
+:root[data-dashboard-style='millennium'][data-millennium-cjk-font='ark'] {
+  --mil-font-zh:
+    'Ark Pixel 12px SC', 'Fusion Pixel 12px Proportional SC', 'Zpix', 'Noto Sans SC',
     'Microsoft YaHei UI', sans-serif;
 }
 
@@ -2300,6 +2480,14 @@
   [data-dashboard-card-header='true']
   [data-dashboard-card-title='true'] {
   font-size: 0.75rem;
+}
+
+/* 快捷按钮区域上下居中，标题条额外留白由内容区域统一承担。 */
+:root[data-dashboard-style='millennium']
+  [data-home-page='true']
+  [data-home-card-id='builtin:quick-actions']
+  [data-dashboard-card='true']::before {
+  margin-bottom: 0;
 }
 
 /* 标题条右侧的切换键跟着上移到新的标题条里 */
@@ -2638,4 +2826,115 @@
     inset -2px -2px 0 var(--mil-lo),
     0 5px 0 var(--mil-drop) !important;
   height: calc(100% - 5px);
+}
+
+/* ---------- 图标：统一成方头、直角的线条 ---------- */
+
+/* 侧栏等处用项目自带的直角图标集；其余线条图标（lucide）把圆头圆角改成方头直角并加粗一档，
+   两者笔画观感一致，和键帽、像素字更搭 */
+:root[data-dashboard-style='millennium'] svg.lucide {
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 2.25;
+}
+
+:root[data-dashboard-style='millennium'] svg.lucide.animate-spin {
+  stroke-linecap: butt;
+}
+
+/* ---------- 排版修正 ---------- */
+
+/* 行高为 1 且会截断的大数字：像素字的字形比行框高，上下会被裁掉一点，给足行高 */
+:root[data-dashboard-style='millennium'] .truncate.leading-none {
+  line-height: 1.12;
+}
+
+/* 一言的文字沿用界面字体（通用规则会把它强制成系统无衬线体） */
+:root[data-dashboard-style='millennium']
+  [data-dashboard-shell='true']
+  [data-home-card-style]
+  [data-home-hitokoto='true'],
+:root[data-dashboard-style='millennium']
+  [data-dashboard-shell='true']
+  [data-home-card-style]
+  [data-home-hitokoto='true']
+  p {
+  font-family: var(--mil-font-pixel) !important;
+}
+
+/* 首页大数字：不被上下挤压，字号让一点给行高 */
+:root[data-dashboard-style='millennium'] [data-home-summary-primary='true'] .text-3xl {
+  flex-shrink: 0;
+  font-size: 2rem;
+}
+
+/* 状态屏：卡片变窄时运行时长换到下一行，不和「活动」叠在一起 */
+:root[data-dashboard-style='millennium']
+  [data-home-page='true']
+  [data-maibot-runtime-status='true']
+  > div {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+/* 待审核数量角标：用界面的珊瑚橙，直角 */
+:root[data-dashboard-style='millennium'] [data-dashboard-shell] .bg-orange-500 {
+  background-color: var(--mil-hot);
+  color: var(--mil-hot-ink);
+}
+
+:root[data-dashboard-style='millennium'] [data-home-summary-primary='true'] .text-3xl {
+  font-size: 1.875rem;
+  margin-top: 2px;
+}
+
+:root[data-dashboard-style='millennium'] [data-home-summary-primary='true'] > .text-xs {
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+/* 多行输入框的高度是脚本按内容算的，边框每加 1 像素就会多出一点滚动：
+   这里边框保持 1 像素，第二个像素用内阴影补 */
+:root[data-dashboard-style='millennium'] [data-dashboard-main='true'] textarea {
+  border-width: 1px;
+  box-shadow:
+    inset 0 0 0 1px var(--mil-line),
+    var(--mil-sunk);
+}
+
+/* ---------- 千禧图标 ---------- */
+
+/* 手绘图标的路径和替换规则统一登记在 src/components/ui/millennium-icon-set.ts，
+   替换图标库图标用的样式由它在启动时生成，这里不再手写。 */
+
+/* 下沉屏幕阴影上下各外扩 4px，扣除后让视觉高度与工作区键对齐。 */
+:root[data-dashboard-style='millennium'] [data-dashboard-header-search='true'] input {
+  height: calc(2.875rem - 8px);
+}
+
+/* 搜索结果沿用聊天记录的下沉屏幕材质，外框保留机壳颗粒底纹。 */
+:root[data-dashboard-style='millennium'] [data-search-results='true'] {
+  background-color: var(--mil-screen);
+  background-image: var(--mil-screen-tex);
+  background-size: 3px 3px;
+  border: 2px solid var(--mil-line);
+  box-shadow: inset 0 0 0 1px var(--mil-line), inset 4px 4px 0 var(--mil-screen-shade);
+  color: var(--mil-screen-ink);
+  margin: 0.5rem;
+}
+
+:root[data-dashboard-style='millennium'] [data-search-results='true'] [data-search-answer='true'] {
+  background-color: transparent;
+}
+
+:root[data-dashboard-style='millennium'] [data-search-results='true'] .text-muted-foreground {
+  color: var(--mil-screen-dim);
+}
+
+:root[data-dashboard-style='millennium'] [data-search-results='true'] .text-foreground {
+  color: var(--mil-screen-ink);
+}
+
+:root[data-dashboard-style='millennium'] [data-search-answer='true'] > .text-muted-foreground {
+  color: var(--mil-screen-ink);
 }

@@ -95,6 +95,13 @@ afterEach(() => {
 })
 
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: toastMock }) }))
+// 扩展列表新增 MCP 栏目，列表测试提供独立的空配置，避免发出真实后端请求。
+vi.mock('@/lib/config-api', () => ({
+  getBotConfig: async () => ({ mcp: { enabled: true, servers: [] } }),
+}))
+vi.mock('@/lib/mcp-api', () => ({
+  getMCPStatus: async () => ({ servers: [] }),
+}))
 vi.mock('@/lib/restart-context', () => ({
   RestartProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   useRestart: () => restartState,
@@ -215,6 +222,16 @@ function makeHostPolicyResponse(pluginId: string) {
   return {
     success: true,
     plugin_id: pluginId,
+    active_identity: {
+      adapter_id: `gateway:${pluginId}:gw`,
+      plugin_id: pluginId,
+      gateway_name: 'gw',
+      platform: 'qq',
+      account_id: '123456',
+      scope: null,
+    },
+    has_entry: true,
+    account_entries: [],
     global_defaults: { group: 'allow' as const, private: 'block' as const },
     policy: {
       group: { default_action: 'inherit' as const, allow_ids: [] as string[], deny_ids: [] as string[] },
@@ -283,7 +300,10 @@ beforeEach(() => {
   vi.mocked(pluginApi.getLocalPluginReadme).mockResolvedValue('')
   vi.mocked(pluginApi.getLocalPluginChangelog).mockResolvedValue('')
   vi.mocked(chatApi.getAdapterHostPolicy).mockResolvedValue(makeHostPolicyResponse('adapter.qq') as never)
-  vi.mocked(chatApi.updateAdapterHostPolicy).mockResolvedValue(makeHostPolicyResponse('adapter.qq') as never)
+  vi.mocked(chatApi.updateAdapterHostPolicy).mockImplementation(async (pluginId, policy) => ({
+    ...makeHostPolicyResponse(pluginId),
+    policy,
+  }) as never)
   vi.mocked(chatApi.getAdapterPolicyDefaults).mockResolvedValue({ group: 'allow', private: 'block' })
   vi.mocked(chatApi.updateAdapterPolicyDefaults).mockImplementation(async (defaults) => defaults)
 })
@@ -331,8 +351,6 @@ describe('PluginConfigPage 特征化', () => {
   })
 
   it('插件卡片不显示重复的配置按钮，更新按钮保留原色并标记统一边框', async () => {
-    // 上游把插件列表迁到 react-query（usePluginList），脱离 QueryClientProvider 渲染会拿不到数据，
-    // 因此改用带 Provider 的 renderPage()。
     const { container } = renderPage()
 
     await screen.findByText('Emoji Plugin')
@@ -365,6 +383,10 @@ describe('PluginConfigPage 特征化', () => {
     failedPlugin.load_status = 'failed'
     const disabledPlugin = makePlugin('test.disabled', 'Disabled Plugin')
     disabledPlugin.enabled = false
+    // 上游 1.3.5 起「已禁用」以后端下发的 load_status 为准（management.py 的 effective_load_status：
+    // enabled=false 且未处于 success/loading/stopping 时才改写成 'disabled'）。只置 enabled=false
+    // 而 load_status 仍为 'success' 表示「已加载但配置关闭」，会被归入加载成功组。
+    disabledPlugin.load_status = 'disabled'
     const loadingPlugin = makePlugin('test.loading', 'Loading Plugin')
     loadingPlugin.load_status = 'loading'
     const successPlugin = makePlugin('test.success', 'Success Plugin')
@@ -619,7 +641,9 @@ describe('PluginConfigPage 空列表', () => {
     await user.type(screen.getByPlaceholderText('搜索插件或 MCP 服务...'), 'zzz-not-found')
     // 同「无插件时展示 MCP 服务分组」：插件侧「没有找到匹配的插件」属上游不可达分支，
     // 页面仍展示 MCP 服务分组（其内部自行处理「没有匹配的 MCP 服务」提示）。
+    expect(screen.queryByText('Emoji Plugin')).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'MCP 服务' })).toBeInTheDocument()
+    expect(await screen.findByText('没有匹配的 MCP 服务')).toBeInTheDocument()
     expect(screen.queryByText('没有找到匹配的插件')).not.toBeInTheDocument()
     expect(screen.queryByText('尝试其他搜索关键词')).not.toBeInTheDocument()
   })
@@ -786,7 +810,12 @@ describe('PluginConfigPage 主程序放行规则', () => {
     expect(screen.queryByRole('button', { name: /重置/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
 
-    await user.click(screen.getAllByRole('combobox')[0])
+    // 上游 1.3.5 之后页面上不止一个下拉框，按「群聊规则」所在的区块精确定位默认规则下拉。
+    await user.click(
+      within(screen.getByTestId('mode-hint:group').parentElement as HTMLElement).getByRole(
+        'combobox'
+      )
+    )
     await user.click(await screen.findByText('接收所有消息'))
     await user.click(screen.getAllByRole('button', { name: '添加列表项' })[0])
 
@@ -808,7 +837,11 @@ describe('PluginConfigPage 主程序放行规则', () => {
     await user.click(await screen.findByRole('button', { name: /QQ Adapter/ }))
     await user.click(await screen.findByRole('tab', { name: '黑白名单规则' }))
     await user.click(await screen.findByText('群聊规则'))
-    await user.click(screen.getAllByRole('combobox')[0])
+    await user.click(
+      within(screen.getByTestId('mode-hint:group').parentElement as HTMLElement).getByRole(
+        'combobox'
+      )
+    )
     await user.click(await screen.findByText('默认不接收消息'))
 
     await waitFor(
@@ -2106,6 +2139,9 @@ describe('PluginConfigPage 列表操作与状态', () => {
     themeState.dashboardStyle = 'future-retro'
     const disabled = makePlugin('p.off', 'Off Plugin')
     disabled.enabled = false
+    // 与「按加载成功/加载中/加载失败分层」同因：上游 1.3.5 起已禁用以后端下发的
+    // load_status='disabled' 为准，仅置 enabled=false 会被当作「已加载但配置关闭」。
+    disabled.load_status = 'disabled'
     const failed = makePlugin('p.bad', 'Bad Plugin')
     failed.load_status = 'failed'
     failed.load_error = 'boom'
@@ -2128,7 +2164,8 @@ describe('PluginConfigPage 列表操作与状态', () => {
     await screen.findByText('Emoji Plugin')
     await user.click(screen.getByRole('button', { name: '刷新插件列表' }))
     await waitFor(() => expect(vi.mocked(pluginApi.getInstalledPlugins).mock.calls.length).toBeGreaterThan(1))
-    await user.click(screen.getByRole('button', { name: /重启麦麦/ }))
+    await user.click(screen.getByRole('button', { name: '更多操作' }))
+    await user.click(screen.getByRole('menuitem', { name: /重启麦麦/ }))
     expect(restartState.triggerRestart).toHaveBeenCalled()
   })
 
@@ -2136,7 +2173,8 @@ describe('PluginConfigPage 列表操作与状态', () => {
     restartState.isRestarting = true
     renderPage()
     await screen.findByText('Emoji Plugin')
-    expect(screen.getByRole('button', { name: /重启麦麦/ })).toBeDisabled()
+    await userEvent.setup().click(screen.getByRole('button', { name: '更多操作' }))
+    expect(screen.getByRole('menuitem', { name: /重启麦麦/ })).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('重复插件 ID 只保留第一项', async () => {
