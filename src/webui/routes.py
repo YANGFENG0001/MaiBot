@@ -32,6 +32,7 @@ from src.webui.routers.mcp import router as mcp_router
 from src.webui.routers.model import router as model_router
 from src.webui.routers.news import router as news_router
 from src.webui.routers.person import router as person_router
+from src.webui.routers.personas import router as personas_router
 from src.webui.routers.plugin import router as plugin_router
 from src.webui.routers.reasoning_process import router as reasoning_process_router
 from src.webui.routers.reply_effects import router as reply_effects_router
@@ -87,8 +88,9 @@ router.include_router(memory_router)
 router.include_router(memory_transfers_router)
 # 注册 Workspace 子系统管理路由
 router.include_router(workspaces_router)
-# 注册 BotProfile、记忆权限组、审计与 Kami 管理路由
+# 注册 BotProfile、人设、记忆权限组、审计与 Kami 管理路由
 router.include_router(bot_profiles_router)
+router.include_router(personas_router)
 router.include_router(memory_permissions_router)
 router.include_router(memory_audit_router)
 router.include_router(kami_router)

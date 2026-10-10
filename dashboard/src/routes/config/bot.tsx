@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -61,6 +62,7 @@ import { getConfigSearchField, scrollToConfigSearchField } from '@/lib/config-se
 import { RestartProvider, useRestart } from '@/lib/restart-context'
 import { cn } from '@/lib/utils'
 import { SharedGroupsSettings } from '@/routes/chat-management'
+import { BotPersonaOverrides } from '@/routes/config/bot/BotPersonaOverrides'
 
 import type { ConfigSchema } from '@/types/config-schema'
 import {
@@ -91,7 +93,7 @@ import { GlobalLearningSettings } from './bot/GlobalLearningSettings'
 import { MemorySwitchGuard, MemorySwitchProvider } from './bot/MemorySwitchGuard'
 
 type ConfigSectionData = Record<string, unknown>
-type BotSettingsMode = 'groups' | 'detail' | 'commands' | 'source'
+type BotSettingsMode = 'groups' | 'bots' | 'detail' | 'commands' | 'source'
 // ==================== 常量定义 ====================
 /** Toast 显示前的延迟时间 (毫秒) */
 const TOAST_DISPLAY_DELAY = 500
@@ -151,7 +153,7 @@ function BotConfigPageContent() {
     const tab = params.get('tab')
     if (hasUnsavedChanges || (tab && !configSchema)) return
     lastRouteSearchRef.current = routeSearch
-    if (mode === 'groups' || mode === 'commands') {
+    if (mode === 'groups' || mode === 'commands' || mode === 'bots') {
       setEditMode(mode)
     } else {
       setEditMode('detail')
@@ -763,6 +765,11 @@ function BotConfigPageContent() {
                   共享组设置
                   {editMode === 'groups' && <Check className="ml-auto h-4 w-4" />}
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void handleModeChange('bots')}>
+                  <Bot className="mr-2 h-4 w-4" />
+                  按 Bot 覆盖人设
+                  {editMode === 'bots' && <Check className="ml-auto h-4 w-4" />}
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void handleModeChange('source')}>
                   <Code2 className="mr-2 h-4 w-4" />
                   源文件编辑
@@ -839,6 +846,8 @@ function BotConfigPageContent() {
             }}
           />
         )}
+
+        {editMode === 'bots' && <BotPersonaOverrides />}
 
         {/* 详细设置模式（原可视化模式） */}
         {editMode === 'detail' && (

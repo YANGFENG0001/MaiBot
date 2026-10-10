@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from src.common.database.database import get_db_session
-from src.common.database.database_model import BotProfile, MemorySpace
+from src.common.database.database_model import BotProfile, BotRouteState, MemorySpace
 from src.webui.dependencies import require_auth, require_auth_with_rate_limit
 from src.workspaces import bot_profile_service
 
@@ -87,6 +87,46 @@ class BotProfileUpdateRequest(BaseModel):
     expected_revision: Optional[int] = Field(default=None, ge=1)
 
 
+class BotProfileCreateRequest(BaseModel):
+    """新建 BotProfile。
+
+    `profile_type` 只开放 `group`：`public` 是迁移预置的兜底身份、`kami` 由
+    Kami 专用安全流程独占，都不该从普通管理界面里造出来。
+    """
+
+    name: str = Field(..., min_length=1, max_length=100)
+    profile_type: Literal["group"] = "group"
+    parent_profile_id: Optional[str] = None
+    persona_profile_id: Optional[str] = None
+    home_memory_space_id: str = Field(..., min_length=1, max_length=64)
+    inherit_parent_persona: bool = True
+    inherit_parent_tools: bool = True
+    inherit_parent_plugins: bool = True
+    enabled: bool = True
+    profile_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class RouteStateItem(BaseModel):
+    session_id: str
+    active_bot_profile_id: str
+    active_bot_profile_name: str
+    route_mode: str
+    changed_by_person_id: str
+    policy_revision: int
+    updated_at: datetime
+
+
+class RouteStateListResponse(BaseModel):
+    success: bool = True
+    data: list[RouteStateItem]
+
+
+class RouteStateRequest(BaseModel):
+    active_bot_profile_id: str = Field(..., min_length=1, max_length=64)
+    route_mode: Literal["public", "group", "specific"] = "specific"
+    changed_by_person_id: str = Field(default="webui", max_length=255)
+
+
 class ToolPolicyRequest(BaseModel):
     effect: Literal["allow", "deny"]
     expected_revision: Optional[int] = Field(default=None, ge=1)
@@ -145,7 +185,9 @@ def _profile_item(profile: BotProfile, space_names: dict[str, str]) -> BotProfil
         is_system=profile.is_system,
         policy_revision=profile.policy_revision,
         lineage=[LineageItem(id=item.id, name=item.name, profile_type=item.profile_type) for item in lineage],
-        tool_policies=[ToolPolicyItem(component_name=name, effect=effect) for name, effect in sorted(tool_policies.items())],
+        tool_policies=[
+            ToolPolicyItem(component_name=name, effect=effect) for name, effect in sorted(tool_policies.items())
+        ],
         plugin_policies=[
             PluginPolicyItem(plugin_id=plugin_id, effect=policy.effect, overrides=_load_json(policy.overrides_json))
             for plugin_id, policy in sorted(plugin_policies.items())
@@ -187,9 +229,81 @@ async def list_bot_profiles() -> BotProfileListResponse:
     )
 
 
+@router.post(
+    "",
+    response_model=BotProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
+async def create_bot_profile(request: BotProfileCreateRequest) -> BotProfileResponse:
+    fields = request.model_dump()
+    name = fields.pop("name")
+    try:
+        profile = bot_profile_service.create_profile(name=name, **fields)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return BotProfileResponse(data=_profile_item(profile, _space_names()))
+
+
+# ---- 会话级 Bot 路由 ---------------------------------------------------------
+# 注意：这几个端点必须声明在 `/{profile_id}` 之前，否则 `/routes` 会被
+# 当成 profile_id 匹配掉（FastAPI 按声明顺序匹配）。
+
+
+def _route_item(state: BotRouteState, profile_names: dict[str, str]) -> RouteStateItem:
+    return RouteStateItem(
+        session_id=state.session_id,
+        active_bot_profile_id=state.active_bot_profile_id,
+        active_bot_profile_name=profile_names.get(state.active_bot_profile_id, state.active_bot_profile_id),
+        route_mode=state.route_mode,
+        changed_by_person_id=state.changed_by_person_id,
+        policy_revision=state.policy_revision,
+        updated_at=state.updated_at,
+    )
+
+
+@router.get("/routes", response_model=RouteStateListResponse)
+async def list_bot_routes() -> RouteStateListResponse:
+    profile_names = {profile.id: profile.name for profile in bot_profile_service.list_profiles()}
+    return RouteStateListResponse(
+        data=[_route_item(state, profile_names) for state in bot_profile_service.list_route_states()]
+    )
+
+
+@router.put("/routes/{session_id}", response_model=RouteStateItem, dependencies=[Depends(require_auth_with_rate_limit)])
+async def set_bot_route(session_id: str, request: RouteStateRequest) -> RouteStateItem:
+    try:
+        state = bot_profile_service.set_route_state(
+            session_id,
+            request.active_bot_profile_id,
+            request.route_mode,
+            request.changed_by_person_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    profile_names = {profile.id: profile.name for profile in bot_profile_service.list_profiles()}
+    return _route_item(state, profile_names)
+
+
+@router.delete(
+    "/routes/{session_id}", response_model=MutationResponse, dependencies=[Depends(require_auth_with_rate_limit)]
+)
+async def reset_bot_route(session_id: str) -> MutationResponse:
+    return MutationResponse(removed=bot_profile_service.reset_route_state(session_id))
+
+
 @router.get("/{profile_id}", response_model=BotProfileResponse)
 async def get_bot_profile(profile_id: str) -> BotProfileResponse:
     return BotProfileResponse(data=_profile_item(_require_profile(profile_id), _space_names()))
+
+
+@router.delete("/{profile_id}", response_model=MutationResponse, dependencies=[Depends(require_auth_with_rate_limit)])
+async def delete_bot_profile(profile_id: str) -> MutationResponse:
+    try:
+        removed = bot_profile_service.delete_profile(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return MutationResponse(removed=removed)
 
 
 @router.patch("/{profile_id}", response_model=BotProfileResponse, dependencies=[Depends(require_auth_with_rate_limit)])
@@ -213,7 +327,11 @@ async def list_bot_profile_tools(profile_id: str) -> list[ToolPolicyItem]:
     ]
 
 
-@router.put("/{profile_id}/tools/{component_name}", response_model=ToolPolicyItem, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.put(
+    "/{profile_id}/tools/{component_name}",
+    response_model=ToolPolicyItem,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def set_bot_profile_tool(profile_id: str, component_name: str, request: ToolPolicyRequest) -> ToolPolicyItem:
     _conflict(_require_profile(profile_id), request.expected_revision)
     try:
@@ -223,7 +341,11 @@ async def set_bot_profile_tool(profile_id: str, component_name: str, request: To
     return ToolPolicyItem(component_name=policy.component_name, effect=policy.effect)
 
 
-@router.delete("/{profile_id}/tools/{component_name}", response_model=MutationResponse, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.delete(
+    "/{profile_id}/tools/{component_name}",
+    response_model=MutationResponse,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def delete_bot_profile_tool(profile_id: str, component_name: str) -> MutationResponse:
     try:
         removed = bot_profile_service.remove_tool_policy(profile_id, component_name)
@@ -242,7 +364,11 @@ async def list_bot_profile_plugins(profile_id: str) -> list[PluginPolicyItem]:
     ]
 
 
-@router.put("/{profile_id}/plugins/{plugin_id}", response_model=PluginPolicyItem, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.put(
+    "/{profile_id}/plugins/{plugin_id}",
+    response_model=PluginPolicyItem,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def set_bot_profile_plugin(profile_id: str, plugin_id: str, request: PluginPolicyRequest) -> PluginPolicyItem:
     _conflict(_require_profile(profile_id), request.expected_revision)
     try:
@@ -262,7 +388,11 @@ async def set_bot_profile_plugin(profile_id: str, plugin_id: str, request: Plugi
     )
 
 
-@router.delete("/{profile_id}/plugins/{plugin_id}", response_model=MutationResponse, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.delete(
+    "/{profile_id}/plugins/{plugin_id}",
+    response_model=MutationResponse,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def delete_bot_profile_plugin(profile_id: str, plugin_id: str) -> MutationResponse:
     try:
         removed = bot_profile_service.remove_plugin_policy(profile_id, plugin_id)
@@ -286,7 +416,11 @@ async def list_bot_profile_memory_rules(profile_id: str) -> list[MemoryRuleItem]
     ]
 
 
-@router.put("/{profile_id}/memory-rules/{target_space_id}", response_model=MemoryRuleItem, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.put(
+    "/{profile_id}/memory-rules/{target_space_id}",
+    response_model=MemoryRuleItem,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def set_bot_profile_memory_rule(
     profile_id: str,
     target_space_id: str,
@@ -306,7 +440,11 @@ async def set_bot_profile_memory_rule(
     )
 
 
-@router.delete("/{profile_id}/memory-rules/{target_space_id}", response_model=MutationResponse, dependencies=[Depends(require_auth_with_rate_limit)])
+@router.delete(
+    "/{profile_id}/memory-rules/{target_space_id}",
+    response_model=MutationResponse,
+    dependencies=[Depends(require_auth_with_rate_limit)],
+)
 async def delete_bot_profile_memory_rule(profile_id: str, target_space_id: str) -> MutationResponse:
     try:
         removed = bot_profile_service.remove_memory_rule(profile_id, target_space_id)

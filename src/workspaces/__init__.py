@@ -4,6 +4,7 @@ from .access_resolver import AccessResolver, MemoryAccessDecision, access_resolv
 from .bot_profile_service import PUBLIC_BOT_PROFILE_ID, BotProfileService, bot_profile_service
 from .context import BotProfileContext, MemoryScope, PersonaOverlay, WorkspaceContext
 from .partition_service import PartitionService, partition_service
+from .persona_service import PersonaService, persona_service
 from .request_context import (
     BotRequestContext,
     SessionWorkspaceContext,
@@ -25,6 +26,7 @@ __all__ = [
     "MemoryScope",
     "PartitionService",
     "PersonaOverlay",
+    "PersonaService",
     "SessionWorkspaceContext",
     "WorkspaceContext",
     "WorkspaceService",
@@ -34,5 +36,6 @@ __all__ = [
     "create_background_task_without_request_context",
     "get_current_request_context",
     "partition_service",
+    "persona_service",
     "workspace_service",
 ]

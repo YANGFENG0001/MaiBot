@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Mapping, Optional
 
 import json
+import uuid
 
 from sqlmodel import select
 
@@ -14,6 +15,10 @@ from src.common.database.database_model import (
     BotProfilePluginPolicy,
     BotProfileToolPolicy,
     BotRouteState,
+    MemorySpace,
+    MemorySpaceBotRule,
+    PermissionGroupBotRule,
+    PersonaProfile,
     Workspace,
 )
 
@@ -32,7 +37,13 @@ class BotProfileService:
             profile = session.get(BotProfile, profile_id)
             if profile is None or not profile.enabled:
                 raise ValueError(f"BotProfile 不存在或已禁用: {profile_id}")
-            return BotProfileContext(profile.id, profile.profile_type, profile.home_memory_space_id, profile.policy_revision, profile.parent_profile_id or "")
+            return BotProfileContext(
+                profile.id,
+                profile.profile_type,
+                profile.home_memory_space_id,
+                profile.policy_revision,
+                profile.parent_profile_id or "",
+            )
 
     def validate_parent(self, profile_id: str, parent_profile_id: Optional[str]) -> None:
         if not parent_profile_id:
@@ -103,6 +114,122 @@ class BotProfileService:
         order = {"public": 0, "group": 1, "kami": 2}
         return sorted(profiles, key=lambda item: (order.get(item.profile_type, 9), item.name))
 
+    def create_profile(
+        self,
+        *,
+        name: str,
+        home_memory_space_id: str,
+        profile_type: str = "group",
+        parent_profile_id: Optional[str] = None,
+        persona_profile_id: Optional[str] = None,
+        inherit_parent_persona: bool = True,
+        inherit_parent_tools: bool = True,
+        inherit_parent_plugins: bool = True,
+        enabled: bool = True,
+        profile_id: Optional[str] = None,
+    ) -> BotProfile:
+        """新建 BotProfile。
+
+        只允许创建 `group` 型：`public` 是迁移预置的兜底身份、`kami` 由
+        v45→v46 迁移与 Kami 专用安全流程独占，都不该从普通管理界面里造出来。
+        """
+
+        normalized_name = (name or "").strip()
+        if not normalized_name:
+            raise ValueError("Bot 名称不能为空")
+        if profile_type != "group":
+            raise ValueError("只能创建 group 型 Bot；public/kami 由系统管理")
+
+        normalized_space = (home_memory_space_id or "").strip()
+        if not normalized_space:
+            raise ValueError("必须指定主记忆空间")
+
+        parent = (parent_profile_id or "").strip() or PUBLIC_BOT_PROFILE_ID
+
+        with get_db_session() as session:
+            if session.exec(select(BotProfile).where(BotProfile.name == normalized_name)).first():
+                raise ValueError(f"Bot 名称已存在: {normalized_name}")
+            if session.get(MemorySpace, normalized_space) is None:
+                raise ValueError(f"主记忆空间不存在: {normalized_space}")
+            if session.get(BotProfile, parent) is None:
+                raise ValueError(f"父级 BotProfile 不存在: {parent}")
+            if persona_profile_id and session.get(PersonaProfile, persona_profile_id) is None:
+                raise ValueError(f"人设不存在: {persona_profile_id}")
+
+            new_id = (profile_id or "").strip() or f"bot-profile-{uuid.uuid4().hex[:12]}"
+            if session.get(BotProfile, new_id) is not None:
+                raise ValueError(f"BotProfile ID 已存在: {new_id}")
+
+            profile = BotProfile(
+                id=new_id,
+                name=normalized_name,
+                profile_type=profile_type,
+                parent_profile_id=parent,
+                persona_profile_id=persona_profile_id or None,
+                home_memory_space_id=normalized_space,
+                inherit_parent_persona=inherit_parent_persona,
+                inherit_parent_tools=inherit_parent_tools,
+                inherit_parent_plugins=inherit_parent_plugins,
+                enabled=enabled,
+                is_system=False,
+            )
+            session.add(profile)
+
+        # 复用既有的成环校验：新建时父链必然已存在，这里只防「自己指向自己」之类的脏数据。
+        self.validate_parent(new_id, parent)
+        return self.get_profile(new_id)  # type: ignore[return-value]
+
+    def delete_profile(self, profile_id: str) -> bool:
+        """删除 BotProfile 及其策略，带引用守卫。
+
+        不允许级联删除：删掉一个仍被 Workspace 或会话路由引用的 Bot，
+        会让 `resolve_for_session` 落到 `PUBLIC_BOT_PROFILE_ID` 兜底，
+        表现为「某个群的人格突然变了」——比直接报错更难排查。
+        """
+
+        with get_db_session() as session:
+            profile = session.get(BotProfile, profile_id)
+            if profile is None:
+                return False
+            if profile.is_system:
+                raise ValueError(f"系统内置 BotProfile 不可删除: {profile.name}")
+
+            children = session.exec(select(BotProfile).where(BotProfile.parent_profile_id == profile_id)).all()
+            if children:
+                names = ", ".join(child.name for child in children)
+                raise ValueError(f"仍有子级 BotProfile 继承它，无法删除: {names}")
+
+            workspaces = session.exec(select(Workspace).where(Workspace.bot_profile_id == profile_id)).all()
+            if workspaces:
+                names = ", ".join(workspace.name for workspace in workspaces)
+                raise ValueError(f"仍被子系统引用，无法删除: {names}")
+
+            routes = session.exec(select(BotRouteState).where(BotRouteState.active_bot_profile_id == profile_id)).all()
+            if routes:
+                sessions = ", ".join(route.session_id for route in routes[:5])
+                raise ValueError(f"仍有会话正在使用它，无法删除: {sessions}")
+
+            # 记忆权限组里的 Bot 规则是管理端显式配置，静默丢弃会让「某些人突然读不到
+            # 记忆」；而且它带 bot_profiles 外键，不拦就会抛裸 FK 错误。
+            group_rules = session.exec(
+                select(PermissionGroupBotRule).where(PermissionGroupBotRule.bot_profile_id == profile_id)
+            ).all()
+            if group_rules:
+                groups = ", ".join(str(rule.permission_group_id) for rule in group_rules[:5])
+                raise ValueError(f"仍被记忆权限组的 Bot 规则引用，请先移除该规则: {groups}")
+
+            # `memory_space_bot_rules` 是跨空间读取「双向握手」的入站半边，与出站半边
+            # `bot_profile_memory_rules` 成对存在，所以一起级联删除，避免留下半条授权。
+            for model in (BotProfileToolPolicy, BotProfilePluginPolicy, BotProfileMemoryRule, MemorySpaceBotRule):
+                for row in session.exec(select(model).where(model.bot_profile_id == profile_id)).all():
+                    session.delete(row)
+            # 必须先落盘子表的删除：工作单元在给 DELETE 排序时会把 `bot_profiles` 排在
+            # `memory_space_bot_rules` 之前（`bot_profiles` 有自引用外键，排序会退化），
+            # 于是父行先删就撞外键约束。显式 flush 把顺序钉死。
+            session.flush()
+            session.delete(profile)
+            return True
+
     def update_profile(self, profile_id: str, **changes: Any) -> BotProfile:
         """更新可继承字段；父级变更走 validate_parent 防止成环。"""
 
@@ -119,6 +246,12 @@ class BotProfileService:
             raise ValueError(f"不支持的 BotProfile 字段: {', '.join(sorted(unknown))}")
         if "parent_profile_id" in changes:
             self.validate_parent(profile_id, changes["parent_profile_id"])
+        if changes.get("persona_profile_id"):
+            # 悬空的人设外键会让运行期 `_resolve_persona` 静默退回空覆盖层，
+            # 表现为「人设设了但没生效」，所以在写入侧就拦掉。
+            with get_db_session() as session:
+                if session.get(PersonaProfile, changes["persona_profile_id"]) is None:
+                    raise ValueError(f"人设不存在: {changes['persona_profile_id']}")
         with get_db_session() as session:
             profile = session.get(BotProfile, profile_id)
             if profile is None:
@@ -363,6 +496,12 @@ class BotProfileService:
     def get_route_state(self, session_id: str) -> Optional[BotRouteState]:
         with get_db_session() as session:
             return session.get(BotRouteState, session_id)
+
+    def list_route_states(self) -> list[BotRouteState]:
+        """列出全部会话级 Bot 路由，供管理界面展示。"""
+
+        with get_db_session() as session:
+            return list(session.exec(select(BotRouteState).order_by(BotRouteState.session_id)).all())
 
     def reset_route_state(self, session_id: str) -> bool:
         """恢复 Workspace 默认 Bot 路由。"""
