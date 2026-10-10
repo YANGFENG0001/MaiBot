@@ -11,11 +11,14 @@
  *   handleRestart / isRestarting / uncheckedCount / onOpenReviewer，hook 负责编排其余全部逻辑。
  * - 插件快捷入口的纯函数 helper（id 编解码、schema 解析等）随 hook 一并下沉。
  */
-import { ClipboardCheck, FileText, HardDrive, Puzzle, RotateCcw, Settings } from 'lucide-react'
+import { BookOpen, ClipboardCheck, FileText, HardDrive, MessageSquare, Puzzle, RotateCcw, Settings } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
+import { getBotConfigSchema } from '@/lib/config-api'
+import { buildTabGroupsFromSchema } from '@/lib/config-tab-groups'
 import {
   getInstalledPlugins,
   getPluginConfigSchema,
@@ -26,6 +29,11 @@ import {
 import type { QuickShortcutDefinition } from '../types'
 
 const QUICK_SHORTCUT_STORAGE_KEY = 'maibot-home-quick-shortcuts'
+// 上游 1.3.5（5ee8f74fb）把默认集改成了 6 个 route 入口，但**从未更新任何测试**：
+// 上游自己的 index.test.tsx 与 useQuickShortcuts.test.tsx（含当前 main）都仍断言下面这份
+// 3 项默认集，即实现与测试长期自相矛盾。这里刻意保留 fork 原有默认（重启 / 审核器 / 日志），
+// 以兑现「不影响原有功能」——上游新增的 route:chat、external:docs、配置类快捷方式与
+// route:logs:<stage> 等入口全部保留，只是不进入默认选中集，用户仍可在对话框里自行勾选。
 const DEFAULT_QUICK_SHORTCUT_IDS = ['action:restart', 'action:expression-review', 'route:logs']
 const SIDEBAR_REDUNDANT_SHORTCUT_IDS = new Set([
   'route:plugin-market',
@@ -213,6 +221,25 @@ export function useQuickShortcuts({
   const [quickShortcutSearch, setQuickShortcutSearch] = useState('')
   const [pluginShortcuts, setPluginShortcuts] = useState<QuickShortcutDefinition[]>([])
   const [isPluginShortcutsLoading, setIsPluginShortcutsLoading] = useState(false)
+  const configSchemaQuery = useQuery({
+    queryKey: ['bot-config', 'schema'],
+    queryFn: getBotConfigSchema,
+    staleTime: Infinity,
+  })
+  const configShortcuts = useMemo<QuickShortcutDefinition[]>(
+    () =>
+      configSchemaQuery.data
+        ? buildTabGroupsFromSchema(configSchemaQuery.data).map((tab) => ({
+            id: `route:bot-config:${tab.id}`,
+            category: 'config' as const,
+            label: tab.label,
+            description: t('home.quickActions.descriptions.configSection', { section: tab.label }),
+            icon: Settings,
+            href: `/config/bot?${new URLSearchParams({ tab: tab.id }).toString()}`,
+          }))
+        : [],
+    [configSchemaQuery.data, t]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -317,12 +344,38 @@ export function useQuickShortcuts({
         href: '/logs',
       },
       {
+        id: 'route:chat',
+        category: 'system',
+        label: t('home.quickActions.chat'),
+        description: t('home.quickActions.descriptions.chat'),
+        icon: MessageSquare,
+        href: '/chat',
+      },
+      {
+        id: 'external:docs',
+        category: 'external',
+        label: t('home.quickActions.docs'),
+        description: t('home.quickActions.descriptions.docs'),
+        icon: BookOpen,
+        href: 'https://docs.mai-mai.org',
+        external: true,
+      },
+      ...(['replyer', 'planner', 'reasoning'] as const).map((stage) => ({
+        id: `route:logs:${stage}`,
+        category: 'monitor' as const,
+        label: t(`home.quickActions.${stage}Logs`),
+        description: t(`home.quickActions.descriptions.${stage}Logs`),
+        icon: FileText,
+        href: stage === 'reasoning' ? '/reasoning-process' : `/reasoning-process?stage=${stage}`,
+      })),
+      ...configShortcuts,
+      {
         id: 'route:settings-appearance',
         category: 'system',
         label: t('home.quickActions.appearanceSettings'),
         description: t('home.quickActions.descriptions.appearanceSettings'),
         icon: Settings,
-        href: '/config/bot?mode=webui&tab=appearance',
+        href: '/settings?tab=appearance',
       },
       {
         id: 'route:settings-local-cache',
@@ -350,7 +403,7 @@ export function useQuickShortcuts({
       },
       ...pluginShortcuts,
     ],
-    [handleRestart, isRestarting, onOpenReviewer, pluginShortcuts, t, uncheckedCount]
+    [configShortcuts, handleRestart, isRestarting, onOpenReviewer, pluginShortcuts, t, uncheckedCount]
   )
 
   const quickShortcutMap = useMemo(

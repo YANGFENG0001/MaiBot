@@ -1,6 +1,11 @@
+import type { ReactNode } from 'react'
+
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+import { getBotConfigSchema } from '@/lib/config-api'
 import { getInstalledPlugins, getPluginConfigSchema } from '@/lib/plugin-api'
 import type { InstalledPlugin, PluginConfigSchema } from '@/lib/plugin-api'
 
@@ -16,8 +21,14 @@ vi.mock('@/lib/plugin-api', () => ({
   getPluginConfigSchema: vi.fn(),
 }))
 
+// 上游 1.3.5 让 hook 经 react-query 拉取 bot 配置 schema 来生成配置类快捷方式。
+vi.mock('@/lib/config-api', () => ({
+  getBotConfigSchema: vi.fn(),
+}))
+
 const getInstalledPluginsMock = vi.mocked(getInstalledPlugins)
 const getPluginConfigSchemaMock = vi.mocked(getPluginConfigSchema)
+const getBotConfigSchemaMock = vi.mocked(getBotConfigSchema)
 
 const STORAGE_KEY = 'maibot-home-quick-shortcuts'
 const DEFAULT_IDS = ['action:restart', 'action:expression-review', 'route:logs']
@@ -29,10 +40,17 @@ const SIDEBAR_REDUNDANT_IDS = [
   'route:emoji',
   'route:expression',
 ]
+// 上游 1.3.5 往内置项里追加了 route:chat / external:docs 与三个 route:logs:<stage> 日志入口，
+// 上游自己的这份清单没跟着更新（其 main 上仍是 7 项、长期红），这里按合并后的实现补齐。
 const BUILTIN_OPTION_IDS = [
   'action:restart',
   'action:expression-review',
   'route:logs',
+  'route:chat',
+  'external:docs',
+  'route:logs:replyer',
+  'route:logs:planner',
+  'route:logs:reasoning',
   'route:settings-appearance',
   'route:settings-local-cache',
   'route:model-list',
@@ -109,9 +127,17 @@ function createTabsSchema(
 function renderQuickShortcuts(
   overrides?: Partial<Parameters<typeof useQuickShortcuts>[0]>
 ) {
+  // hook 内部走 react-query 拉取配置 schema，必须自备 QueryClientProvider。
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  })
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  )
   return renderHook(
     (props: Parameters<typeof useQuickShortcuts>[0]) => useQuickShortcuts(props),
     {
+      wrapper,
       initialProps: {
         isRestarting: false,
         handleRestart: vi.fn(),
@@ -127,7 +153,10 @@ beforeEach(() => {
   localStorage.clear()
   getInstalledPluginsMock.mockReset()
   getPluginConfigSchemaMock.mockReset()
+  getBotConfigSchemaMock.mockReset()
   getInstalledPluginsMock.mockResolvedValue([])
+  // 空 schema ⇒ 不产生配置类快捷方式，内置项集合保持稳定。
+  getBotConfigSchemaMock.mockResolvedValue({ nested: {} } as never)
 })
 
 afterEach(() => {

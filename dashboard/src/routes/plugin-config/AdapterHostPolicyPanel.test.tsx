@@ -152,6 +152,16 @@ function makeResponse(
   return {
     success: true,
     plugin_id: pluginId,
+    active_identity: {
+      adapter_id: `gateway:${pluginId}:gw`,
+      plugin_id: pluginId,
+      gateway_name: 'gw',
+      platform: 'qq',
+      account_id: '123456',
+      scope: null,
+    },
+    has_entry: true,
+    account_entries: [],
     global_defaults: overrides.global_defaults ?? { group: 'allow' as const, private: 'block' as const },
     policy: overrides.policy ?? makePolicy(),
   }
@@ -193,6 +203,34 @@ afterEach(() => {
 })
 
 describe('AdapterHostPolicyPanel', () => {
+  it('复制包含未保存编辑，切换保留其他组，删除仅移除非当前组', async () => {
+    const user = userEvent.setup()
+    vi.mocked(updateAdapterHostPolicy).mockImplementation(async (pluginId, policy) =>
+      makeResponse(pluginId, { policy }))
+    await renderReadyPanel()
+
+    await user.click(screen.getByRole('button', { name: '添加:输入接收消息的用户 ID' }))
+    await user.click(screen.getByRole('button', { name: '复制当前组' }))
+    await user.type(screen.getByLabelText('分组名称'), '测试组')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(updateAdapterHostPolicy).toHaveBeenCalledTimes(1))
+    const copied = vi.mocked(updateAdapterHostPolicy).mock.calls[0][1]
+    expect(copied.active_group).toBe('default')
+    expect(copied.policy_groups).toHaveLength(2)
+    expect(copied.policy_groups?.[1].private.allow_ids).toEqual(['new-item'])
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建分组' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '测试组' }))
+    await waitFor(() => expect(updateAdapterHostPolicy).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(updateAdapterHostPolicy).mock.calls[1][1].active_group).toBe(copied.policy_groups?.[1].id)
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建分组' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '管理分组' }))
+    expect(screen.queryByRole('button', { name: '删除分组 测试组' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '删除分组 默认分组' }))
+    await waitFor(() => expect(updateAdapterHostPolicy).toHaveBeenCalledTimes(3))
+    expect(vi.mocked(updateAdapterHostPolicy).mock.calls[2][1].policy_groups).toHaveLength(1)
+  })
+
   it('加载中展示转圈提示', async () => {
     const deferred = createDeferred<ReturnType<typeof makeResponse>>()
     vi.mocked(getAdapterHostPolicy).mockReturnValue(deferred.promise as never)
@@ -355,13 +393,13 @@ describe('AdapterHostPolicyPanel', () => {
     )
   })
 
-  it('自动保存成功后写入 query cache、失效聊天流详情，并热重载草稿', async () => {
+  it('自动保存成功后写入 query cache、失效聊天流详情，并保留编辑草稿', async () => {
     const user = userEvent.setup()
     const queryClient = makeQueryClient()
     const setQueryData = vi.spyOn(queryClient, 'setQueryData')
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
     const savedPolicy = makePolicy({
-      group: { default_action: 'block', deny_ids: ['999'] },
+      group: { default_action: 'block', deny_ids: ['new-item'] },
     })
     const saved = makeResponse('adapter.qq', { policy: savedPolicy })
     vi.mocked(updateAdapterHostPolicy).mockResolvedValue(saved as never)
@@ -378,9 +416,9 @@ describe('AdapterHostPolicyPanel', () => {
     await waitFor(() =>
       expect(screen.getByTestId('host-policy-save-status')).toHaveTextContent('已保存')
     )
-    // 回包落缓存后草稿被热重载为服务端返回的名单
+    // 回包落缓存后保留编辑草稿，内容与保存结果一致时显示已保存。
     expect(screen.getByTestId('list-value:输入不接收消息的群号')).toHaveTextContent(
-      JSON.stringify(['999'])
+      JSON.stringify(['new-item'])
     )
   })
 
@@ -427,7 +465,9 @@ describe('AdapterHostPolicyPanel', () => {
       { timeout: 6000 }
     )
 
-    deferred.resolve(makeResponse())
+    deferred.resolve(makeResponse('adapter.qq', {
+      policy: makePolicy({ private: { default_action: 'allow' } }),
+    }))
     await waitFor(
       () => expect(screen.getByTestId('host-policy-save-status')).toHaveTextContent('已保存'),
       { timeout: 6000 }

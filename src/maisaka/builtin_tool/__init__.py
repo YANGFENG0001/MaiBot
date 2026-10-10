@@ -23,8 +23,6 @@ from .reply import get_tool_spec as get_reply_tool_spec
 from .reply import handle_tool as handle_reply_tool
 from .send_emoji import get_tool_spec as get_send_emoji_tool_spec
 from .send_emoji import handle_tool as handle_send_emoji_tool
-from .send_image import get_tool_spec as get_send_image_tool_spec
-from .send_image import handle_tool as handle_send_image_tool
 from .show_emoji_list import get_tool_spec as get_show_emoji_list_tool_spec
 from .show_emoji_list import handle_tool as handle_show_emoji_list_tool
 from .switch_chat import get_tool_spec as get_switch_chat_tool_spec
@@ -57,10 +55,10 @@ class BuiltinToolEntry:
     visibility: BuiltinToolVisibility = "visible"
     chat_scope: BuiltinToolChatScope = "all"
 
-    def build_spec(self) -> ToolSpec:
+    def build_spec(self, context: Optional[ToolAvailabilityContext] = None) -> ToolSpec:
         """生成带统一可见性元数据的工具声明。"""
 
-        tool_spec = deepcopy(self.get_spec())
+        tool_spec = deepcopy(get_reply_tool_spec(context) if self.name == "reply" else self.get_spec())
         tool_spec.metadata["builtin_stage"] = self.stage
         tool_spec.metadata["visibility"] = self.visibility
         return tool_spec
@@ -109,7 +107,6 @@ BUILTIN_TOOL_ENTRIES: List[BuiltinToolEntry] = [
     ),
     BuiltinToolEntry("send_emoji", get_send_emoji_tool_spec, handle_send_emoji_tool, stage="action"),
     BuiltinToolEntry("show_emoji_list", get_show_emoji_list_tool_spec, handle_show_emoji_list_tool, stage="action"),
-    BuiltinToolEntry("send_image", get_send_image_tool_spec, handle_send_image_tool, stage="action"),
     BuiltinToolEntry("tool_search", get_tool_search_tool_spec, handle_tool_search_tool, stage="action"),
     BuiltinToolEntry(
         "fetch_history",
@@ -144,9 +141,9 @@ def _is_builtin_tool_enabled_by_config(entry: BuiltinToolEntry) -> bool:
     """根据全局配置判断内置工具是否应暴露。"""
 
     if entry.name == "show_emoji_list":
-        return bool(global_config.experimental.enable_rich_reply)
-    if entry.name in {"send_emoji", "send_image"} and bool(global_config.experimental.enable_rich_reply):
-        return False
+        return global_config.emoji.use_new_send_logic
+    if entry.name == "send_emoji":
+        return not global_config.emoji.use_new_send_logic
     if entry.name in {"fetch_history", "switch_chat"}:
         return bool(global_config.experimental.focus_mode)
     return True
@@ -192,14 +189,14 @@ def is_builtin_tool_in_action_stage(tool_spec: ToolSpec) -> bool:
 def get_all_builtin_tool_specs(context: Optional[ToolAvailabilityContext] = None) -> List[ToolSpec]:
     """获取全部内置工具声明。"""
 
-    return [entry.build_spec() for entry in _get_builtin_tool_entries(context=context)]
+    return [entry.build_spec(context) for entry in _get_builtin_tool_entries(context=context)]
 
 
 def get_builtin_tools(context: Optional[ToolAvailabilityContext] = None) -> List[ToolDefinitionInput]:
     """获取默认暴露给模型层的内置工具定义。"""
 
     tool_specs = [
-        entry.build_spec()
+        entry.build_spec(context)
         for entry in _get_builtin_tool_entries(stage="action", visibility="visible", context=context)
     ]
     return [tool_spec.to_llm_definition() for tool_spec in tool_specs if tool_spec.enabled]

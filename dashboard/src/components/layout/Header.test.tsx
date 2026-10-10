@@ -78,6 +78,19 @@ vi.mock('motion/react', async () => {
   ))
   MotionHeader.displayName = 'MotionHeader'
 
+  const MotionDiv = ({
+    animate: _animate,
+    initial: _initial,
+    transition: _transition,
+    onAnimationComplete: _onAnimationComplete,
+    ...props
+  }: HTMLAttributes<HTMLDivElement> & {
+    onAnimationComplete?: unknown
+    animate?: unknown
+    initial?: unknown
+    transition?: unknown
+  }) => <div {...props} />
+
   const MotionSpan = ({
     children,
     layoutId,
@@ -95,6 +108,7 @@ vi.mock('motion/react', async () => {
   return {
     LayoutGroup: ({ children }: { children: ReactNode }) => <>{children}</>,
     motion: {
+      div: MotionDiv,
       header: MotionHeader,
       span: MotionSpan,
     },
@@ -304,7 +318,11 @@ describe('Header', () => {
 
     expect(container.querySelector('[data-dashboard-header-collapsed="true"]')).toBeInTheDocument()
     expect(screen.queryByTestId('background-header')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'header.searchPlaceholder' })).toHaveClass('hidden')
+    // 上游 1.3.5 把顶栏搜索从「按钮 + 弹窗」改成内联表单，折叠态下整个内容区
+    // （含搜索表单）都被包进 hidden 容器，只留 16px 的展开条。
+    expect(
+      document.querySelector('[data-dashboard-header-search="true"]')?.closest('.hidden')
+    ).not.toBeNull()
 
     expect(screen.queryByRole('button', { name: 'header.expandSidebar' })).not.toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: 'header.expandTopbar' })[0])
@@ -328,17 +346,17 @@ describe('Header', () => {
     await waitFor(() => expect(screen.getByText('搜索对话框已打开')).toBeInTheDocument())
   })
 
-  it('搜索打开时高亮对应顶栏按钮', () => {
+  it('搜索打开时不再高亮顶栏按钮，改为渲染顶栏内联搜索表单', () => {
     mocks.pathname = '/settings'
     const { rerender } = render(<Header {...makeProps({ searchOpen: false })} />)
 
     expect(document.querySelector('[data-header-action-highlighted="true"]')).toBeNull()
 
     rerender(<Header {...makeProps({ searchOpen: true })} />)
-    expect(document.querySelector('[data-header-action-highlighted="true"]')).toHaveAttribute(
-      'aria-label',
-      'header.searchPlaceholder'
-    )
+    // 上游 1.3.5 起搜索入口是顶栏内联表单，不再有可高亮的搜索按钮；
+    // searchOpen 只用于压掉工作区选中药丸（highlightedHeaderAction 非空）。
+    expect(document.querySelector('[data-header-action-highlighted="true"]')).toBeNull()
+    expect(document.querySelector('[data-dashboard-header-search="true"]')).toBeInTheDocument()
   })
 
   it('语言菜单打开时高亮语言按钮，并支持日韩切换', () => {
@@ -370,11 +388,12 @@ describe('Header', () => {
     expect(screen.getByRole('button', { name: 'header.moreActions' })).toBeInTheDocument()
   })
 
-  it('非设置工作区隐藏移动菜单与侧栏切换，日志槽位可见', () => {
+  it('日志工作区显示日志槽位，移动菜单与侧栏切换保持可见', () => {
     const props = makeProps({ workspaceMode: 'logs', sidebarOpen: true })
     render(<Header {...props} />)
 
-    expect(screen.getByRole('button', { name: 'a11y.closeMenu' })).toHaveClass('hidden')
+    // 上游 1.3.5 去掉了日志工作区对移动菜单按钮的隐藏（否则小屏无法展开侧栏）。
+    expect(screen.getByRole('button', { name: 'a11y.closeMenu' })).not.toHaveClass('hidden')
     expect(screen.getByRole('button', { name: 'header.switchSidebarToHover' })).toHaveClass(
       'lg:hidden'
     )
@@ -394,14 +413,15 @@ describe('Header', () => {
     expect(props.onSidebarToggle).toHaveBeenCalledOnce()
   })
 
-  it('搜索已打开时再次点击会关闭，Electron 无后端名时回退未连接文案', async () => {
+  it('提交顶栏搜索会请求打开搜索，Electron 无后端名时回退未连接文案', async () => {
     mocks.electron = true
     mocks.getActiveBackend.mockResolvedValue(null)
     const props = makeProps({ searchOpen: true })
     render(<Header {...props} />)
 
+    // 内联搜索表单的提交按钮：始终请求「打开搜索」，不再做开关切换。
     fireEvent.click(screen.getByRole('button', { name: 'header.searchPlaceholder' }))
-    expect(props.onSearchOpenChange).toHaveBeenCalledWith(false)
+    expect(props.onSearchOpenChange).toHaveBeenCalledWith(true)
     expect(await screen.findByText('header.notConnected')).toBeInTheDocument()
   })
 
@@ -473,18 +493,22 @@ describe('Header', () => {
     render(<Header {...props} />)
 
     const logsTab = screen.getByRole('tab', { name: 'workspace.logs' })
-    const searchButton = screen.getByRole('button', { name: 'header.searchPlaceholder' })
+    // 上游 1.3.5 用「设置」入口取代了原搜索按钮的顶栏操作位。
+    // 同名入口在移动端下拉里也有一个，这里按顶栏操作标记精确定位。
+    const settingsAction = document.querySelector(
+      '[data-dashboard-header-action="true"][aria-label="sidebar.menu.settings"]'
+    ) as HTMLElement
 
     fireEvent.pointerEnter(logsTab)
-    fireEvent.pointerEnter(searchButton)
-    expect(searchButton).toHaveAttribute('data-header-action-highlighted', 'true')
+    fireEvent.pointerEnter(settingsAction)
+    expect(settingsAction).toHaveAttribute('data-header-action-highlighted', 'true')
     expect(logsTab.querySelector('[data-layout-id="topbar-selection-pill"]')).not.toBeInTheDocument()
 
-    fireEvent.pointerLeave(searchButton)
+    fireEvent.pointerLeave(settingsAction)
     act(() => {
       vi.advanceTimersByTime(600)
     })
-    expect(searchButton).toHaveAttribute('data-header-action-highlighted', 'false')
+    expect(settingsAction).toHaveAttribute('data-header-action-highlighted', 'false')
   })
 
   it('日志工作区根据切换器间距压缩标签，并在间隙足够后恢复', () => {

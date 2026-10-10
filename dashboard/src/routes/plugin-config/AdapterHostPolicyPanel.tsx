@@ -1,14 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Loader2, Save, UsersRound } from 'lucide-react'
+import { AlertCircle, Copy, Info, Loader2, Plus, Save, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { ListFieldEditor } from '@/components/ListFieldEditor'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -19,19 +21,21 @@ import {
 } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
 import { useResolvedAvatarUrl } from '@/lib/avatar-url'
+import { generateId } from '@/lib/id'
 import { getAdapterHostPolicy, getAllChatStreams, updateAdapterHostPolicy } from '@/lib/chat-management-api'
 import type {
   AdapterAccountEntry,
   AdapterActiveIdentity,
   AdapterHostDefaultAction,
   AdapterHostPolicy,
+  AdapterHostPolicyGroup,
   AdapterPolicyDefaults,
   ChatStreamType,
 } from '@/lib/chat-management-api'
 
 interface AdapterHostPolicyPanelProps {
   pluginId: string
-  /** 账号与保存工具栏的挂载点（页签同一行）；未提供时渲染在面板顶部 */
+  /** 账号、分组操作与保存工具栏的挂载点（页签同一行）；未提供时渲染在面板顶部 */
   toolbarContainer?: HTMLElement | null
 }
 
@@ -44,6 +48,7 @@ interface AdapterHostPolicyEditorProps {
   saveStatus: string | null
   manualSaveDisabled: boolean
   onManualSave: () => void
+  onGroupsChange: (policy: AdapterHostPolicy) => void
   toolbarContainer?: HTMLElement | null
   onSectionChange: (
     chatType: ChatStreamType,
@@ -56,7 +61,7 @@ interface AdapterHostPolicyEditorProps {
 export const AUTOSAVE_DELAY_MS = 2000
 
 function clonePolicy(policy: AdapterHostPolicy): AdapterHostPolicy {
-  return {
+  const cloned: AdapterHostPolicy = {
     group: {
       default_action: policy.group.default_action,
       allow_ids: [...policy.group.allow_ids],
@@ -68,6 +73,43 @@ function clonePolicy(policy: AdapterHostPolicy): AdapterHostPolicy {
       deny_ids: [...policy.private.deny_ids],
     },
   }
+  if (policy.policy_groups) {
+    cloned.active_group = policy.active_group
+    cloned.policy_groups = policy.policy_groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      ...clonePolicy({ group: group.group, private: group.private }),
+    }))
+  }
+  return cloned
+}
+
+function normalizePolicy(policy: AdapterHostPolicy): AdapterHostPolicy {
+  const normalized = clonePolicy(policy)
+  for (const chatType of ['group', 'private'] as const) {
+    for (const field of ['allow_ids', 'deny_ids'] as const) {
+      normalized[chatType][field] = [...new Set(policy[chatType][field].map((id) => id.trim()).filter(Boolean))]
+    }
+  }
+  if (normalized.policy_groups) {
+    normalized.policy_groups = normalized.policy_groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      ...normalizePolicy(group.id === normalized.active_group
+        ? { group: normalized.group, private: normalized.private }
+        : { group: group.group, private: group.private }),
+    }))
+  }
+  return normalized
+}
+
+/** 当前草稿先写入所在分组，再执行切换、复制等操作，避免丢失尚未自动保存的编辑。 */
+function getDraftGroups(policy: AdapterHostPolicy): AdapterHostPolicyGroup[] {
+  const draft = clonePolicy(policy)
+  const groups = draft.policy_groups ?? [{ id: 'default', name: '默认分组', group: draft.group, private: draft.private }]
+  return groups.map((group) => group.id === (draft.active_group ?? 'default')
+    ? { ...group, group: draft.group, private: draft.private }
+    : group)
 }
 
 function formatSaveTime(timestamp: number): string {
@@ -107,9 +149,37 @@ function AdapterHostPolicyEditor({
   saveStatus,
   manualSaveDisabled,
   onManualSave,
+  onGroupsChange,
   toolbarContainer,
   onSectionChange,
 }: AdapterHostPolicyEditorProps) {
+  const [groupDialog, setGroupDialog] = useState<'new' | 'copy' | 'manage' | null>(null)
+  const [groupName, setGroupName] = useState('')
+  const groups = getDraftGroups(policy)
+  const activeGroup = policy.active_group ?? 'default'
+  const nameError = !groupName.trim() ? '请输入分组名称' : groups.some((group) => group.name === groupName.trim())
+    ? '分组名称已存在' : null
+  const changeGroups = (nextGroups: AdapterHostPolicyGroup[], nextActive = activeGroup) => {
+    const selected = nextGroups.find((group) => group.id === nextActive)
+    if (!selected) return
+    onGroupsChange({
+      group: selected.group,
+      private: selected.private,
+      policy_groups: nextGroups,
+      active_group: nextActive,
+    })
+  }
+  const addGroup = () => {
+    if (nameError) return
+    const rules = groupDialog === 'copy' ? clonePolicy(policy) : {
+      group: { default_action: 'inherit' as const, allow_ids: [], deny_ids: [] },
+      private: { default_action: 'inherit' as const, allow_ids: [], deny_ids: [] },
+    }
+    changeGroups([...groups, {
+      id: generateId(), name: groupName.trim(), group: rules.group, private: rules.private,
+    }])
+    setGroupDialog(null)
+  }
   const streamsQuery = useQuery({
     queryKey: ['chat-streams', 'all'],
     queryFn: getAllChatStreams,
@@ -156,12 +226,51 @@ function AdapterHostPolicyEditor({
           <Badge variant="outline">无专属规则，按全局默认生效</Badge>
         )}
       </div>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        <Select value={activeGroup} disabled={saveStatus === '自动保存中'}
+          onValueChange={(id) => changeGroups(groups, id)}>
+          <SelectTrigger id="adapter-policy-group" aria-label="当前生效分组" className="h-8 w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {groups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
         {saveStatus && (
           <span className="text-muted-foreground text-xs" data-testid="host-policy-save-status">
             {saveStatus}
           </span>
         )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-label="新建分组"
+          title="新建分组"
+          disabled={saveStatus === '自动保存中'}
+          onClick={() => { setGroupName(''); setGroupDialog('new') }}
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-label="复制当前组"
+          title="复制当前组"
+          disabled={saveStatus === '自动保存中'}
+          onClick={() => { setGroupName(''); setGroupDialog('copy') }}
+        >
+          <Copy className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-label="管理分组"
+          title="管理分组"
+          onClick={() => setGroupDialog('manage')}
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+        </Button>
         <Button
           type="button"
           size="sm"
@@ -180,6 +289,47 @@ function AdapterHostPolicyEditor({
   return (
     <div className="space-y-4">
       {toolbarContainer ? createPortal(toolbar, toolbarContainer) : toolbar}
+      <Dialog open={groupDialog !== null} onOpenChange={(open) => { if (!open) setGroupDialog(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{groupDialog === 'manage' ? '管理策略分组' : groupDialog === 'copy' ? '复制当前分组' : '新建策略分组'}</DialogTitle>
+            <DialogDescription>
+              {groupDialog === 'manage' ? '当前生效分组不能删除，请先切换到其他分组。'
+                : groupDialog === 'copy' ? '复制当前组的全部规则，创建后仍使用当前组。'
+                  : '新组默认继承全局设置，名单为空；创建后可从下拉框切换。'}
+            </DialogDescription>
+          </DialogHeader>
+          {groupDialog === 'manage' ? (
+            <div className="max-h-80 space-y-2 overflow-y-auto">
+              {groups.map((group) => (
+                <div key={group.id} className="flex items-center justify-between gap-2 rounded-md border p-3">
+                  <span className="truncate">{group.name}</span>
+                  {group.id === activeGroup ? <Badge>当前生效</Badge> : (
+                    <Button size="sm" variant="outline" aria-label={`删除分组 ${group.name}`}
+                      disabled={saveStatus === '自动保存中'}
+                      onClick={() => changeGroups(groups.filter((item) => item.id !== group.id))}>
+                      <Trash2 className="mr-1 h-4 w-4" />删除
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <form onSubmit={(event) => { event.preventDefault(); addGroup() }} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="adapter-policy-group-name">分组名称</Label>
+                <Input id="adapter-policy-group-name" value={groupName} maxLength={100}
+                  onChange={(event) => setGroupName(event.target.value)} placeholder="例如：日常、测试、维护" />
+                {groupName && nameError && <p className="text-sm text-destructive">{nameError}</p>}
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setGroupDialog(null)}>取消</Button>
+                <Button type="submit" disabled={Boolean(nameError) || saveStatus === '自动保存中'}>创建</Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
       {hasEntry === false && staleAccounts.length > 0 && (
         <Alert>
           <AlertCircle className="h-4 w-4" />
@@ -319,10 +469,13 @@ export function AdapterHostPolicyPanel({
   const policyQuery = useQuery({
     queryKey,
     queryFn: () => getAdapterHostPolicy(pluginId),
-    // 适配器换账号登录后当前激活身份会变化，定期拉取保证面板展示的规则归属不脱靶
-    refetchInterval: 30_000,
+    // 未连接时频繁检查，连接成功后自动显示规则；连接后定期同步账号与规则归属。
+    refetchInterval: (query) => query.state.data?.active_identity ? 30_000 : 3_000,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
   })
   const serverPolicy = policyQuery.data?.policy
+  const hasActiveIdentity = Boolean(policyQuery.data?.active_identity)
   const serverPolicyText = serverPolicy ? JSON.stringify(serverPolicy) : null
   // 草稿与保存状态放在面板层：回包只更新内容，不重挂载组件；
   // 与服务端数据比较一律用内容快照，结构化共享会保留相同内容的旧对象引用。
@@ -334,15 +487,17 @@ export function AdapterHostPolicyPanel({
   const serverSnapshotRef = useRef<string | null>(serverPolicyText)
   const pendingSaveRef = useRef<AdapterHostPolicy | null>(null)
   const autosaveTimerRef = useRef<number | null>(null)
+  // 空白行只属于编辑草稿；保存与脏状态比较使用和后端一致的有效规则。
+  const policyText = policy ? JSON.stringify(normalizePolicy(policy)) : null
 
   const hasUnsavedChanges =
-    policy !== null && serverPolicyText !== null && JSON.stringify(policy) !== serverPolicyText
+    policyText !== null && serverPolicyText !== null && policyText !== serverPolicyText
 
   const saveMutation = useMutation({
-    mutationFn: (next: AdapterHostPolicy) => updateAdapterHostPolicy(pluginId, next),
+    mutationFn: (next: AdapterHostPolicy) => updateAdapterHostPolicy(pluginId, normalizePolicy(next)),
     onSuccess: (response) => {
       serverSnapshotRef.current = JSON.stringify(response.policy)
-      setPolicy(clonePolicy(response.policy))
+      // 保存回包只更新服务端快照，保留空白输入框和请求期间产生的新编辑。
       setLastSaved({ text: JSON.stringify(response.policy), at: Date.now() })
       queryClient.setQueryData(queryKey, response)
       void queryClient.invalidateQueries({ queryKey: ['chat-stream-detail'] })
@@ -371,10 +526,20 @@ export function AdapterHostPolicyPanel({
 
   // 自动保存：编辑停止后写回后端
   useEffect(() => {
+    // 适配器断开后不能确定规则归属，取消尚未提交的草稿保存。
+    if (!hasActiveIdentity) {
+      pendingSaveRef.current = null
+      return
+    }
     if (!hasUnsavedChanges || !policy) {
+      pendingSaveRef.current = null
       return
     }
     pendingSaveRef.current = policy
+    // 等当前保存结束再提交最新草稿，避免并发回包打乱规则顺序。
+    if (saveMutation.isPending) {
+      return
+    }
     const timer = window.setTimeout(() => {
       autosaveTimerRef.current = null
       pendingSaveRef.current = null
@@ -387,7 +552,7 @@ export function AdapterHostPolicyPanel({
         autosaveTimerRef.current = null
       }
     }
-  }, [policy, hasUnsavedChanges, mutate])
+  }, [policy, hasUnsavedChanges, hasActiveIdentity, saveMutation.isPending, mutate])
 
   // 切换页签会卸载面板；立即提交尚在防抖期的最新草稿，避免编辑丢失
   useEffect(
@@ -401,14 +566,14 @@ export function AdapterHostPolicyPanel({
   )
 
   // 手动保存：取消尚未执行的自动保存，立即写回当前草稿
-  const saveNow = () => {
+  const saveNow = (nextPolicy = policy) => {
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current)
       autosaveTimerRef.current = null
     }
     pendingSaveRef.current = null
-    if (policy) {
-      mutate(policy)
+    if (nextPolicy && hasActiveIdentity) {
+      mutate(nextPolicy)
     }
   }
 
@@ -432,13 +597,25 @@ export function AdapterHostPolicyPanel({
     )
   }
 
+  if (!hasActiveIdentity) {
+    return (
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertTitle>适配器未连接上对应平台</AlertTitle>
+        <AlertDescription>
+          需要正确填写适配器的相关连接配置，连接上对应平台后，可以设置黑白名单对应规则。
+        </AlertDescription>
+      </Alert>
+    )
+  }
+
   const saveStatus = saveMutation.isPending
     ? '自动保存中'
     : saveMutation.isError
       ? '自动保存失败'
       : hasUnsavedChanges
         ? '未保存的更改'
-        : lastSaved && lastSaved.text === JSON.stringify(policy)
+        : lastSaved && lastSaved.text === policyText
           ? `已保存 ${formatSaveTime(lastSaved.at)}`
           : null
 
@@ -451,7 +628,11 @@ export function AdapterHostPolicyPanel({
       accountEntries={policyQuery.data.account_entries}
       saveStatus={saveStatus}
       manualSaveDisabled={!hasUnsavedChanges || saveMutation.isPending}
-      onManualSave={saveNow}
+      onManualSave={() => saveNow()}
+      onGroupsChange={(nextPolicy) => {
+        setPolicy(nextPolicy)
+        saveNow(nextPolicy)
+      }}
       toolbarContainer={toolbarContainer}
       onSectionChange={(chatType, field, value) =>
         setPolicy((current) =>

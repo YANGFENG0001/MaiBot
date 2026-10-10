@@ -178,6 +178,14 @@ describe('useImportForm', () => {
       }
     })
 
+    it('默认以叙事资料类别构建重试载荷', () => {
+      const { result } = renderForm()
+      expect(result.current.buildCommonImportPayload()).toMatchObject({
+        strategy_override: 'narrative',
+        chat_log: false,
+      })
+    })
+
     it('未选择类别时保留 auto 载荷供旧任务重试', () => {
       const { result } = renderForm()
       // 'auto' 兜底分支只在类别被清空时命中（初始值已是 'narrative'），故显式清空。

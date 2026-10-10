@@ -633,11 +633,9 @@ describe('Layout 壳层、快捷键与公告入口', () => {
 
     expect(getHeader()).toHaveAttribute('data-workspace-mode', workspace)
     expect(Boolean(screen.queryByTestId('back-to-top'))).toBe(showBackToTop)
-    if (workspace === 'settings') {
-      expect(screen.getAllByTestId('sidebar').length).toBeGreaterThan(0)
-    } else {
-      expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument()
-    }
+    // 上游 1.3.5 起移动端侧栏对所有工作区都渲染：日志工作区也保留麦麦导航，
+    // 顶栏菜单按钮与其它页面保持一致（此前只有设置工作区才挂载侧栏）。
+    expect(screen.getAllByTestId('sidebar').length).toBeGreaterThan(0)
   })
 
   it('设置页无背景时主区铺底色，聊天页与自定义背景保持透明', () => {

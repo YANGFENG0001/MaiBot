@@ -35,8 +35,50 @@ function queryToast(suffix = '') {
   return document.querySelector(`[data-dashboard-toast${suffix}="true"]`)
 }
 
+/**
+ * 合并进来的上游 1.3.5 把进度条从 CSS 动画（inline `animationDuration` /
+ * `animationPlayState`）换成了 Web Animations API（`element.animate()` +
+ * `updatePlaybackRate()`）：播放速率不再能从 DOM 上读到，只能在 animate 返回的
+ * Animation 对象上观察，所以这里补一个最小实现并记录调用。
+ *
+ * 两个必须注意的点：
+ * 1. jsdom 根本没有实现 Web Animations API，`Element.prototype.animate` 是
+ *    undefined，因此不能用 `vi.spyOn`（会抛 "The property animate is not defined"），
+ *    只能用 `Object.defineProperty` 新装一个。
+ * 2. 这个桩**只能**留在本文件里，绝不能提到全局 setup.ts：framer-motion 一旦探测到
+ *    `Element.prototype.animate` 存在，就会改用 WAAPI 驱动自己的 duration 类动画并
+ *    等待 `animation.finished`，而 jsdom 下的假动画永远不会 finish，会让
+ *    `AnimatePresence mode="wait"` 的退场永久挂起（model.test.tsx 等页面测试会大面积失败）。
+ *
+ * 另外用普通函数而不是 `vi.fn()`：vitest 配置了 mockReset，`vi.fn()` 会在每个用例前
+ * 被重置成空实现。每次调用返回的假动画对象是在函数体内新建的 `vi.fn()`，不受影响。
+ */
+const animateCalls: Array<{ keyframes: unknown; options: unknown }> = []
+const animations: Array<{
+  cancel: ReturnType<typeof vi.fn>
+  updatePlaybackRate: ReturnType<typeof vi.fn>
+}> = []
+
+Object.defineProperty(Element.prototype, 'animate', {
+  configurable: true,
+  writable: true,
+  value: (keyframes: unknown, options: unknown) => {
+    animateCalls.push({ keyframes, options })
+    const animation = { cancel: vi.fn(), updatePlaybackRate: vi.fn() }
+    animations.push(animation)
+    return animation as unknown as Animation
+  },
+})
+
+/** 取最近一次 animate 调用，避免断言被同一次渲染中的重复挂载干扰 */
+function lastAnimateCall() {
+  return animateCalls[animateCalls.length - 1]
+}
+
 beforeEach(() => {
   mobileState.value = false
+  animateCalls.length = 0
+  animations.length = 0
 })
 
 describe('ToastViewport', () => {
@@ -111,9 +153,10 @@ describe('Toast', () => {
 
     const progress = queryToast('-progress')
     expect(progress).not.toBeNull()
-    expect(progress).toHaveStyle({
-      animationDuration: '2400ms',
-      animationPlayState: 'running',
+    // 时长交给 element.animate()，不再写进 inline style。
+    expect(lastAnimateCall()).toEqual({
+      keyframes: [{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }],
+      options: { duration: 2400, easing: 'linear', fill: 'forwards' },
     })
 
     rerender(
@@ -154,7 +197,12 @@ describe('Toast', () => {
         <ToastViewport />
       </ToastProvider>
     )
-    expect(queryToast('-progress')).toBeNull()
+    // 上游 1.3.5 给 duration 加了 4000ms 默认值，未传时同样渲染进度条。
+    expect(queryToast('-progress')).not.toBeNull()
+    expect(lastAnimateCall()).toEqual({
+      keyframes: [{ transform: 'scaleX(1)' }, { transform: 'scaleX(0)' }],
+      options: { duration: 4000, easing: 'linear', fill: 'forwards' },
+    })
   })
 
   it('视口暂停 / 恢复时同步进度动画，并转发 onPause / onResume', () => {
@@ -168,15 +216,18 @@ describe('Toast', () => {
     )
 
     const region = screen.getByRole('region', { name: /Notifications/i })
-    expect(queryToast('-progress')).toHaveStyle({ animationPlayState: 'running' })
+    expect(queryToast('-progress')).not.toBeNull()
+    const animation = animations[0]
+    expect(animation.updatePlaybackRate).toHaveBeenLastCalledWith(1)
 
     fireEvent.pointerMove(region)
     expect(onPause).toHaveBeenCalledTimes(1)
-    expect(queryToast('-progress')).toHaveStyle({ animationPlayState: 'paused' })
+    // 悬停时减速到 1/3，而不是整体暂停。
+    expect(animation.updatePlaybackRate).toHaveBeenLastCalledWith(1 / 3)
 
     fireEvent.pointerLeave(region)
     expect(onResume).toHaveBeenCalledTimes(1)
-    expect(queryToast('-progress')).toHaveStyle({ animationPlayState: 'running' })
+    expect(animation.updatePlaybackRate).toHaveBeenLastCalledWith(1)
   })
 
   it('未传入 onPause / onResume 时仍能切换进度条播放状态', () => {
@@ -187,11 +238,13 @@ describe('Toast', () => {
     )
 
     const region = screen.getByRole('region', { name: /Notifications/i })
+    const animation = animations[0]
+
     fireEvent.pointerMove(region)
-    expect(queryToast('-progress')).toHaveStyle({ animationPlayState: 'paused' })
+    expect(animation.updatePlaybackRate).toHaveBeenLastCalledWith(1 / 3)
 
     fireEvent.pointerLeave(region)
-    expect(queryToast('-progress')).toHaveStyle({ animationPlayState: 'running' })
+    expect(animation.updatePlaybackRate).toHaveBeenLastCalledWith(1)
   })
 })
 

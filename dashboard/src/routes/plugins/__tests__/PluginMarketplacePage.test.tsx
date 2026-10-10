@@ -13,13 +13,37 @@ import { PLUGIN_MARKET_VIEW_STATE_KEY } from '@/lib/plugin-market-navigation'
 
 // toast 与 navigate 使用 hoisted 稳定引用：toast 位于页面 useEffect 依赖数组中，
 // 引用不稳定会导致初始化 effect 反复执行
-const { toastMock, navigateMock } = vi.hoisted(() => ({
-  toastMock: vi.fn(),
-  navigateMock: vi.fn(),
-}))
+const { toastMock, navigateMock, searchState } = vi.hoisted(() => {
+  const listeners = new Set<() => void>()
+  const state: {
+    value: { pluginId?: string }
+    subscribe: (listener: () => void) => () => void
+    set: (next: { pluginId?: string }) => void
+  } = {
+    value: {},
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    set(next) {
+      state.value = next
+      listeners.forEach((listener) => listener())
+    },
+  }
+  return { toastMock: vi.fn(), navigateMock: vi.fn(), searchState: state }
+})
 
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: toastMock }) }))
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigateMock }))
+// 上游 1.3.5 让市场页读取 useSearch({ strict: false }) 的 pluginId 做深链接，
+// 详情对话框的开关也改由该参数驱动。这里用 useSyncExternalStore 复刻路由往返：
+// navigate({ search }) 写回参数并通知订阅者，页面才能像真实路由一样重渲染。
+vi.mock('@tanstack/react-router', async () => {
+  const { useSyncExternalStore } = await import('react')
+  return {
+    useNavigate: () => navigateMock,
+    useSearch: () => useSyncExternalStore(searchState.subscribe, () => searchState.value),
+  }
+})
 
 // 重启上下文与遮罩层：页面仅作为容器使用，桩掉避免引入 system-api 链路
 vi.mock('@/lib/restart-context', () => ({
@@ -46,6 +70,9 @@ vi.mock('@/lib/plugin-api', () => ({
 vi.mock('@/lib/plugin-stats', () => ({
   getCachedPluginStatsSummary: vi.fn(),
   getPluginStatsSummary: vi.fn(),
+  // 上游 1.3.5 新增：页面会 `void getPluginUserStates().then(...)` 叠加已点赞状态，
+  // 缺这个导出或让它返回非 Promise 都会在 render 阶段直接抛错。
+  getPluginUserStates: vi.fn(async () => ({})),
   likePlugin: vi.fn(),
   recordPluginDownload: vi.fn(),
 }))
@@ -220,6 +247,14 @@ beforeEach(() => {
   window.sessionStorage.clear()
   progressHandler = null
   wsErrorHandler = null
+  // 每个用例都从「无深链接参数」开始；navigate 带 search 时把参数写回，模拟路由往返。
+  searchState.set({})
+  navigateMock.mockReset()
+  navigateMock.mockImplementation((options?: { search?: { pluginId?: string } }) => {
+    if (options && 'search' in options) {
+      searchState.set({ ...(options.search ?? {}) })
+    }
+  })
 
   vi.mocked(pluginApi.getCachedPluginList).mockReturnValue(null)
   vi.mocked(pluginApi.checkGitStatus).mockResolvedValue({ installed: true, version: 'git version 2.44.0' })
@@ -321,7 +356,7 @@ describe('PluginMarketplacePage 初始加载与数据合并', () => {
   it('存在缓存清单时先渲染缓存内容，拉取完成后替换为最新清单', async () => {
     vi.mocked(pluginApi.getCachedPluginList).mockReturnValue([makeMarketPlugin('cached-x')])
     vi.mocked(pluginStatsApi.getCachedPluginStatsSummary).mockReturnValue({
-      'cached-x': { plugin_id: 'cached-x', likes: 3, dislikes: 0, downloads: 9, rating: 5, rating_count: 2 },
+      'cached-x': { plugin_id: 'cached-x', likes: 3, dislikes: 0, downloads: 9, rating: 5, rating_count: 2, comment_count: 2 },
     })
 
     render(<PluginMarketplacePage />)
@@ -1637,6 +1672,7 @@ describe('PluginMarketplacePage 合并、兼容性边界与进度清理', () => 
         downloads: 3,
         rating: 5,
         rating_count: 1,
+        comment_count: 1,
       },
     })
 

@@ -11,10 +11,12 @@ import time
 from rich.console import RenderableType
 
 from src.common.data_models.llm_service_data_models import LLMGenerationOptions
+from src.common.data_models.message_component_data_model import AtComponent
 from src.common.i18n import get_locale
 from src.common.logger import get_logger
 from src.common.prompt_i18n import load_prompt
 from src.common.utils.utils_config import ChatConfigUtils
+from src.common.utils.system_utils import is_bot_self
 from src.config.config import global_config
 from src.core.tooling import ToolAvailabilityContext, ToolRegistry
 from src.llm_models.model_client.base_client import BaseClient, GenerationAttempt
@@ -22,9 +24,11 @@ from src.llm_models.payload_content.context_item import (
     CONTEXT_ITEM_SCHEMA_VERSION,
     ContextItem,
     ContextItemBuilder,
+    FunctionCallItem,
     FunctionCallOutputItem,
     ProviderActivityItem,
     RoleType,
+    UserMessageItem,
     bind_output_items_to_turn,
     get_response_reasoning,
     get_response_text,
@@ -45,7 +49,7 @@ from src.services.llm_service import LLMServiceClient
 from src.workspaces import WorkspaceContext, get_current_request_context, workspace_service
 
 from src.maisaka.builtin_tool import get_builtin_tools
-from src.maisaka.context.history import normalize_tool_call_result_pairs
+from src.maisaka.context.history import collect_tool_turn_anchor_indices, normalize_tool_call_result_pairs
 from src.maisaka.context.messages import (
     LLMContextMessage,
     ModelOutputContextMessage,
@@ -78,7 +82,7 @@ REQUEST_TYPE_BY_REQUEST_KIND = {
     "sub_agent": "maisaka.sub_agent",
 }
 MODEL_TASK_NAME_BY_REQUEST_KIND: dict[str, str] = {
-    "expression_selector": "expression_use",
+    "expression_selector": "fast_model",
     "reply_effect_judge": "utils",
 }
 PROMPT_PREVIEW_CATEGORY_BY_REQUEST_KIND = {
@@ -633,6 +637,9 @@ class MaisakaChatLoopService:
         self._model_task_name = model_task_name.strip() or "planner"
         self._is_group_chat = is_group_chat
         self._session_id = session_id or ""
+        self._bot_platform = ""
+        self._bot_platform_nickname = ""
+        self._bot_group_cardname = ""
         self._extra_tools: List[ToolOption] = []
         self._interrupt_flag: asyncio.Event | None = None
         self._tool_registry: ToolRegistry | None = None
@@ -914,6 +921,42 @@ class MaisakaChatLoopService:
         """设置当前 planner 请求使用的中断标记。"""
         self._interrupt_flag = interrupt_flag
 
+    def _build_bot_nickname_notice(self, history: Sequence[LLMContextMessage]) -> str:
+        """从本会话的真实 @ 信息更新昵称，在上下文前说明 bot 的平台身份。"""
+
+        # 按历史顺序更新，保留最近一次明确提供的昵称；不要把配置昵称当成平台信息。
+        for entry in history:
+            if not isinstance(entry, SessionBackedMessage) or entry.original_message is None:
+                continue
+            message = entry.original_message
+            if not self._session_id or message.session_id != self._session_id:
+                continue
+            for component in message.raw_message.components:
+                if not isinstance(component, AtComponent) or not is_bot_self(message.platform, component.target_user_id):
+                    continue
+                if component.uses_configured_bot_nickname:
+                    continue
+                self._bot_platform = message.platform
+                if component.target_user_nickname:
+                    self._bot_platform_nickname = component.target_user_nickname
+                if self._is_group_chat and component.target_user_cardname:
+                    self._bot_group_cardname = component.target_user_cardname
+
+        lines: List[str] = []
+        if self._bot_platform_nickname:
+            lines.append(self._localized_text({
+                "zh-CN": f"你在 {self._bot_platform} 平台的昵称是“{self._bot_platform_nickname}”。",
+                "en-US": f'Your nickname on {self._bot_platform} is "{self._bot_platform_nickname}".',
+                "ja-JP": f"{self._bot_platform} でのあなたのニックネームは「{self._bot_platform_nickname}」です。",
+            }))
+        if self._is_group_chat and self._bot_group_cardname:
+            lines.append(self._localized_text({
+                "zh-CN": f"你在本群的昵称是“{self._bot_group_cardname}”。",
+                "en-US": f'Your nickname in this group is "{self._bot_group_cardname}".',
+                "ja-JP": f"このグループでのあなたのニックネームは「{self._bot_group_cardname}」です。",
+            }))
+        return (" " if get_locale() == "en-US" else "").join(lines)
+
     def _build_request_messages(
         self,
         selected_history: List[LLMContextMessage],
@@ -942,11 +985,15 @@ class MaisakaChatLoopService:
             resolved_system_prompt = self._custom_chat_system_prompt
         else:
             resolved_system_prompt = self._build_chat_system_prompt()
+        bot_nickname_notice = self._build_bot_nickname_notice(selected_history)
+        if bot_nickname_notice:
+            resolved_system_prompt = f"{bot_nickname_notice}\n\n{resolved_system_prompt}"
         system_item.add_text_content(resolved_system_prompt)
         items.append(system_item.build())
 
         previous_context_timestamp: datetime | None = None
         deferred_boundary_timestamps: List[datetime] = []
+        history_context_items: List[ContextItem] = []
         for msg in selected_history:
             context_items = build_context_items_from_history_entry(
                 msg,
@@ -973,6 +1020,7 @@ class MaisakaChatLoopService:
                     self._append_time_user_message(items, msg.timestamp)
 
             items.extend(context_items)
+            history_context_items.extend(context_items)
             previous_context_timestamp = msg.timestamp
 
         for boundary_timestamp in deferred_boundary_timestamps:
@@ -1009,7 +1057,23 @@ class MaisakaChatLoopService:
                 .build()
             )
 
+        # 跨日时间提示由本方法生成，不能代替真实 user 消息充当工具调用锚点
+        self._validate_function_call_context_anchors(history_context_items)
         return items, history_item_count
+
+    @staticmethod
+    def _validate_function_call_context_anchors(items: Sequence[ContextItem]) -> None:
+        """禁止请求历史从缺少 user/function output 锚点的工具调用开始。"""
+
+        has_function_call_anchor = False
+        for item in items:
+            if isinstance(item, (UserMessageItem, FunctionCallOutputItem)):
+                has_function_call_anchor = True
+                continue
+            if isinstance(item, FunctionCallItem) and not has_function_call_anchor:
+                raise ValueError(
+                    f"请求上下文中的 function call 缺少前置 user/function output 锚点: call_id={item.tool_call.call_id}"
+                )
 
     async def chat_loop_step(
         self,
@@ -1121,14 +1185,17 @@ class MaisakaChatLoopService:
         raw_items = before_request_kwargs.get("items")
         if isinstance(raw_items, list) and raw_items != serialized_items:
             try:
-                built_messages = deserialize_prompt_items(
+                hook_messages = deserialize_prompt_items(
                     raw_items,
                     item_schema_version=before_request_kwargs.get("item_schema_version"),
                     mode=ContextProtocolMode.REQUEST_CONTEXT,
                     original_items=built_messages,
                 )
+                # 协议校验只检查 call/output 配对，hook 替换后的请求仍需满足锚点约束
+                self._validate_function_call_context_anchors(hook_messages)
+                built_messages = hook_messages
             except Exception as exc:
-                logger.warning(f"Hook maisaka.planner.before_request 返回的 items 无法反序列化，已忽略: {exc}")
+                logger.warning(f"Hook maisaka.planner.before_request 返回的 items 无效，已忽略: {exc}")
         if enable_visual_message:
             built_messages = limit_latest_images_in_messages(
                 built_messages,
@@ -1372,6 +1439,13 @@ class MaisakaChatLoopService:
             if (logical_turn_id := MaisakaChatLoopService._get_history_logical_turn_id(message)) in tool_turn_ids
         }
         selected_ids = {id(message) for message in selected_history}
+        anchor_index_by_turn_id = collect_tool_turn_anchor_indices(list(full_history), selected_turn_ids)
+
+        # logical_turn_id 只绑定模型输出和工具结果；窗口命中工具轮次时，还必须补回
+        # 该轮次之前最近的真实 user 上下文，避免请求从 function call 开始。
+        for anchor_index in anchor_index_by_turn_id.values():
+            selected_ids.add(id(full_history[anchor_index]))
+
         return [
             message
             for message in full_history

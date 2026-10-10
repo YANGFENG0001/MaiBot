@@ -141,19 +141,22 @@ describe('小型 UI 模块', () => {
 describe('Toaster', () => {
   it('桌面端使用右滑，并给普通、危险和自定义提示设置对应时长', () => {
     toastState.toasts = [
-      { id: 'default', title: '普通提示', description: '五秒', variant: 'default' },
+      { id: 'default', title: '普通提示', description: '四秒', variant: 'default' },
       { id: 'danger', title: '危险提示', variant: 'destructive' },
       { id: 'custom', title: '自定义提示', duration: 1234 },
     ]
     render(<Toaster />)
 
     expect(screen.getByTestId('toast-provider')).toHaveAttribute('data-swipe', 'right')
+    // 上游 1.3.5 把提示时长统一成「普通 4000ms / 危险 7500ms」，并把 toast.tsx 里
+    // <Toast> 自身的 duration 默认值也设成 4000ms，是一次成体系的调整；但上游没同步
+    // 更新这份清单（其 main 上仍写死 5000 / 10000，长期红），这里按合并后的实现校正。
     expect(screen.getAllByTestId('toast').map((toast) => toast.dataset.duration)).toEqual([
-      '5000',
-      '10000',
+      '4000',
+      '7500',
       '1234',
     ])
-    expect(screen.getByText('五秒')).toBeInTheDocument()
+    expect(screen.getByText('四秒')).toBeInTheDocument()
   })
 
   it('移动端使用上滑方向且始终渲染视口', () => {
